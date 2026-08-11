@@ -30,7 +30,7 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          - os: macos-14           # Apple Silicon
+          - os: macos-15           # Apple Silicon
             platform: macos-arm64
           - os: ubuntu-22.04       # x86_64
             platform: linux-x86_64
@@ -87,8 +87,20 @@ jobs:
           path: ~/.gradle/yano-dist
           key: yano-dist-${{ steps.node.outputs.version }}
 
-      # Both tasks depend on :fetchYanoNode, which resolves the pinned distribution
-      # (cache hit above). jpackage jlinks the bundled JRE from this Temurin JDK.
+      # MUST be its own Gradle invocation, not left to :stageForJpackage's
+      # dependsOn. That task is a Copy whose source is the distribution
+      # directory, and Gradle resolves a Copy's sources while BUILDING the task
+      # graph — before any task, including :fetchYanoNode, has run. So on a cold
+      # cache the packaging build fails at configuration time with "Yano node
+      # distribution … is not available", which is exactly what happened on all
+      # four runners the first time this workflow was tagged. Fetching in a
+      # separate invocation means the directory already exists when the next one
+      # configures. On a cache hit the task is a no-op.
+      - name: Fetch pinned Yano node distribution
+        shell: bash
+        run: ./gradlew fetchYanoNode --no-daemon
+
+      # jpackage jlinks the bundled JRE from this Temurin JDK.
       - name: Build installer + portable zip (${{ matrix.platform }})
         shell: bash
         run: ./gradlew :wallet-app:jpackageInstaller :wallet-app:walletZip --no-daemon
