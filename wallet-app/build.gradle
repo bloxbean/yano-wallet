@@ -188,14 +188,42 @@ tasks.register('jlinkRuntime', Exec) {
     description = 'Build the bundled open-source JRE (jlink) for the UI + managed node'
     def javaHome = System.getProperty('java.home')
     def out = layout.buildDirectory.dir('runtime').get().asFile
-    doFirst { project.delete(out) }
-    // ALL-MODULE-PATH needs an explicit module path to the JDK's own modules.
-    commandLine "${javaHome}/bin/jlink" + (isWindows ? '.exe' : ''),
-            '--module-path', "${javaHome}/jmods",
-            '--add-modules', 'ALL-MODULE-PATH',
-            '--output', out.absolutePath,
-            '--strip-debug', '--no-header-files', '--no-man-pages'
     outputs.dir out
+
+    // The module set is listed explicitly rather than asked for via
+    // ALL-MODULE-PATH, because that token needs a --module-path and a JDK built
+    // per JEP 493 (--enable-linkable-runtime) ships NO jmods directory at all —
+    // it links from its own run-time image. Temurin 25 is such a build, so the
+    // old "--module-path <jdk>/jmods --add-modules ALL-MODULE-PATH" failed on
+    // every CI runner with "No module found in module path". Listing the
+    // system modules works on both kinds of JDK.
+    //
+    // jdk.jlink and jdk.jpackage are excluded deliberately. A linkable runtime
+    // refuses to produce an image containing jdk.jlink ("does not contain
+    // packaged modules and cannot be used to create another image"), and
+    // jdk.jpackage requires jdk.jlink, so it drags it back in. Neither belongs
+    // in a shipped runtime: they are build tools, not things the wallet runs.
+    doFirst {
+        project.delete(out)
+        def javaBin = "${javaHome}/bin/java" + (isWindows ? '.exe' : '')
+        def listed = new StringBuilder()
+        def errors = new StringBuilder()
+        def process = [javaBin, '--list-modules'].execute()
+        process.waitForProcessOutput(listed, errors)
+        if (process.exitValue() != 0) {
+            throw new GradleException("Could not list the JDK's modules: ${errors}")
+        }
+        def modules = listed.toString().readLines()
+                .collect { it.trim().replaceAll('@.*$', '') }
+                .findAll { it && !(it in ['jdk.jlink', 'jdk.jpackage']) }
+        if (modules.isEmpty()) {
+            throw new GradleException("No modules reported by ${javaBin} --list-modules")
+        }
+        commandLine "${javaHome}/bin/jlink" + (isWindows ? '.exe' : ''),
+                '--add-modules', modules.join(','),
+                '--output', out.absolutePath,
+                '--strip-debug', '--no-header-files', '--no-man-pages'
+    }
 }
 
 // jpackage needs a numeric version with a >= 1 major (macOS forbids 0.x), so a
