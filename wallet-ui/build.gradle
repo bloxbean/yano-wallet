@@ -1,0 +1,45 @@
+plugins {
+    id 'java-library'
+}
+
+java {
+    sourceCompatibility = '25'
+    targetCompatibility = '25'
+}
+
+dependencies {
+    // Views depend ONLY on the async contract — wallet-core/CCL/node types
+    // never cross into this module (ADR-033 module rules).
+    def javafxVersion = libs.versions.javafx.get()
+    def javafxPlatform = detectJavafxPlatform()
+
+    api "org.openjfx:javafx-base:${javafxVersion}:${javafxPlatform}"
+    api "org.openjfx:javafx-graphics:${javafxVersion}:${javafxPlatform}"
+    api "org.openjfx:javafx-controls:${javafxVersion}:${javafxPlatform}"
+
+    testImplementation libs.junit.jupiter.api
+    testRuntimeOnly libs.junit.jupiter.engine
+    testRuntimeOnly libs.junit.platform.launcher
+    testImplementation libs.assertj.core
+}
+
+test {
+    useJUnitPlatform()
+}
+
+def detectJavafxPlatform() {
+    def osName = System.getProperty('os.name').toLowerCase()
+    def osArch = System.getProperty('os.arch').toLowerCase()
+
+    if (osName.contains('mac') || osName.contains('darwin')) {
+        return osArch.contains('aarch64') || osArch.contains('arm64') ? 'mac-aarch64' : 'mac'
+    }
+    if (osName.contains('windows')) {
+        return 'win'
+    }
+    if (osName.contains('linux')) {
+        return osArch.contains('aarch64') || osArch.contains('arm64') ? 'linux-aarch64' : 'linux'
+    }
+
+    throw new GradleException("Unsupported JavaFX platform: ${osName} ${osArch}")
+}

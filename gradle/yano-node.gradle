@@ -1,0 +1,146 @@
+// Resolves the Yano node distribution that the wallet launches (dev) and bundles
+// (packaging).
+//
+// The wallet does NOT depend on Yano as a library — there is nothing to link
+// against. The node is a separate Quarkus process the wallet spawns and then
+// talks to over REST. What the build needs is therefore an *artifact*, not a
+// dependency: a released distribution directory.
+//
+// It must be the DISTRIBUTION, not a bare yano.jar. The node reads genesis from
+// its working directory (config/network/<network>/{byron,shelley,alonzo,conway}
+// -genesis.json); only application.yml is baked into the jar. A lone jar cannot
+// start a real network.
+//
+// Resolution order (first hit wins), mirroring what NodeLocator does at runtime:
+//   1. -PyanoDist=/path/to/yano-<version>   explicit local build/unpacked dist
+//      (or the YANO_DIST environment variable)
+//   1b. ./.yano-node/{yano.jar,config}     project-local link to a locally built
+//       node (git-ignored; symlinks are fine)
+//   2. the shared cache under ~/.gradle/yano-dist/yano-<version>/
+//   3. download the pinned release from GitHub, verify SHA-256, unpack to (2)
+//
+// So local dev and offline builds never hit the network, and CI downloads once
+// per version bump (cache the directory keyed on yanoVersion).
+
+def yanoVersion = project.findProperty('yanoVersion') ?: '0.1.0-pre12'
+def cacheRoot = new File(gradle.gradleUserHomeDir, "yano-dist")
+def distDir = new File(cacheRoot, "yano-${yanoVersion}")
+def zipName = "yano-${yanoVersion}.zip"
+def downloadUrl = "https://github.com/bloxbean/yano/releases/download/v${yanoVersion}/${zipName}"
+
+// Pinned checksums: version -> sha256 of the release zip. Yano's releases do not
+// publish .sha256 assets yet, so we record the hash when pinning a version.
+// Populate with: ./gradlew yanoNodeChecksum -PyanoVersion=<version>
+def checksumFile = file("$rootDir/gradle/yano-node.lock")
+def expectedSha = { String version ->
+    if (!checksumFile.exists()) return null
+    def line = checksumFile.readLines().find { it.trim().startsWith("${version}=") }
+    return line ? line.split('=', 2)[1].trim() : null
+}
+
+/** The resolved distribution directory, or null if it is not available yet. */
+ext.resolveYanoDist = { boolean required ->
+    def override = project.findProperty('yanoDist') ?: System.getenv('YANO_DIST')
+    if (override) {
+        def dir = file(override)
+        if (!dir.isDirectory()) {
+            throw new GradleException("yanoDist=${override} is not a directory")
+        }
+        return dir
+    }
+    // A project-local .yano-node/ beats the pinned release: it usually symlinks a
+    // locally built node, and putting one there is an explicit "use this". Needs
+    // yano.jar AND config/ (genesis lives in config/network/<network>/).
+    def local = new File(rootDir, '.yano-node')
+    if (new File(local, 'yano.jar').isFile() && new File(local, 'config').isDirectory()) {
+        return local
+    }
+    if (distDir.isDirectory()) {
+        return distDir
+    }
+    if (required) {
+        throw new GradleException(
+                "Yano node distribution ${yanoVersion} is not available.\n"
+                        + "  Fetch it:      ./gradlew fetchYanoNode\n"
+                        + "  Or point at a local build: -PyanoDist=/path/to/yano-dist "
+                        + "(or YANO_DIST=…)")
+    }
+    return null
+}
+
+tasks.register('fetchYanoNode') {
+    group = 'yano node'
+    description = "Download and unpack the Yano node distribution (${yanoVersion})"
+    outputs.dir(distDir)
+    onlyIf {
+        !(project.findProperty('yanoDist') ?: System.getenv('YANO_DIST')) && !distDir.isDirectory()
+    }
+    doLast {
+        cacheRoot.mkdirs()
+        def zip = new File(cacheRoot, zipName)
+        if (!zip.exists()) {
+            logger.lifecycle("Downloading ${downloadUrl} (~256 MB, once per version)…")
+            def tmp = new File(cacheRoot, "${zipName}.part")
+            tmp.delete()
+            new URI(downloadUrl).toURL().withInputStream { input ->
+                tmp.withOutputStream { it << input }
+            }
+            tmp.renameTo(zip)
+        }
+
+        def actual = java.security.MessageDigest.getInstance('SHA-256')
+                .digest(zip.bytes).encodeHex().toString()
+        def expected = expectedSha(yanoVersion.toString())
+        if (expected == null) {
+            logger.warn("No pinned checksum for Yano ${yanoVersion}. Record it in "
+                    + "gradle/yano-node.lock:\n    ${yanoVersion}=${actual}")
+        } else if (expected != actual) {
+            zip.delete()
+            throw new GradleException("Checksum mismatch for ${zipName}\n"
+                    + "  expected ${expected}\n  actual   ${actual}\n"
+                    + "The download was deleted. Verify the release before retrying.")
+        }
+
+        // The zip already contains a yano-<version>/ root holding yano.jar,
+        // config/ and bin/, so unpack into the cache root.
+        def staging = new File(cacheRoot, "unpack-${yanoVersion}")
+        project.delete(staging)
+        copy {
+            from zipTree(zip)
+            into staging
+        }
+        def unpacked = staging.listFiles()?.find { it.isDirectory() } ?: staging
+        project.delete(distDir)
+        unpacked.renameTo(distDir)
+        project.delete(staging)
+        logger.lifecycle("Yano node ${yanoVersion} ready at ${distDir}")
+    }
+}
+
+tasks.register('yanoNodeChecksum') {
+    group = 'yano node'
+    description = "Print the SHA-256 of the pinned Yano release zip (to record in yano-node.lock)"
+    doLast {
+        def zip = new File(cacheRoot, zipName)
+        if (!zip.exists()) {
+            throw new GradleException("Run ./gradlew fetchYanoNode first (no ${zip})")
+        }
+        def sha = java.security.MessageDigest.getInstance('SHA-256')
+                .digest(zip.bytes).encodeHex().toString()
+        println "${yanoVersion}=${sha}"
+    }
+}
+
+tasks.register('yanoNodeInfo') {
+    group = 'yano node'
+    description = 'Show which Yano node distribution this build will use'
+    doLast {
+        def dir = resolveYanoDist(false)
+        println "pinned version : ${yanoVersion}"
+        println "resolved dist  : ${dir ?: '(not available — run ./gradlew fetchYanoNode)'}"
+        if (dir) {
+            println "node jar       : ${new File(dir, 'yano.jar').exists() ? 'yes' : 'MISSING'}"
+            println "config/        : ${new File(dir, 'config').isDirectory() ? 'yes' : 'MISSING'}"
+        }
+    }
+}

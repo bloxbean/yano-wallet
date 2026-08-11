@@ -1,0 +1,297 @@
+plugins {
+    id 'java'
+    id 'application'
+}
+
+// processResources below reaches into :wallet-connector-proxy's jar task, and
+// this project is configured first (alphabetically), so force that project to be
+// evaluated before this one. (In the Yano repo the root's subprojects block
+// applied java-library to it early, which masked the ordering dependency.)
+evaluationDependsOn(':wallet-connector-proxy')
+
+java {
+    sourceCompatibility = '25'
+    targetCompatibility = '25'
+}
+
+dependencies {
+    implementation project(':wallet-ui')
+    implementation project(':wallet-node-client')
+    implementation project(':wallet-node-launcher')
+    implementation project(':wallet-hardware')
+    implementation project(':wallet-connector-host')
+
+    implementation libs.slf4j.api
+    runtimeOnly libs.slf4j.simple
+
+    testImplementation libs.junit.jupiter.api
+    testImplementation libs.jackson.databind
+    testRuntimeOnly libs.junit.jupiter.engine
+    testRuntimeOnly libs.junit.platform.launcher
+    testImplementation libs.assertj.core
+}
+
+// The Native Messaging proxy jar rides inside the app (ADR-035 M5): the
+// installer copies it to ~/.yano so Chrome can launch it without the app.
+processResources {
+    from(project(':wallet-connector-proxy').tasks.named('jar')) {
+        into 'native-host'
+        rename { 'cip30-proxy.jar' }
+    }
+}
+
+test {
+    useJUnitPlatform()
+}
+
+application {
+    mainClass = 'com.bloxbean.cardano.yano.wallet.app.YanoWalletApp'
+    // Needed by hid4java (Ledger) and JavaFX FFM; also applied by ./gradlew :wallet-app:run.
+    applicationDefaultJvmArgs = ['--enable-native-access=ALL-UNNAMED']
+}
+
+// Hand the app the node the BUILD resolved, so `run` works with no environment
+// setup once ./gradlew fetchYanoNode has been run. Precedence, highest first:
+//   -PyanoNodeJar=/path/to/yano.jar   a jar in a non-dist layout (e.g. the Yano
+//                                     repo's app/build/yano.jar)
+//   YANO_NODE_JAR                     same, via the environment (the app reads
+//                                     this itself; set here too so it wins over
+//                                     a stale fetched dist)
+//   the resolved distribution         -PyanoDist / cache / fetched release
+// If none resolve, nothing is set and NodeLocator falls back to its own search.
+tasks.named('run') {
+    doFirst {
+        def explicit = project.findProperty('yanoNodeJar') ?: System.getenv('YANO_NODE_JAR')
+        if (explicit) {
+            systemProperty 'yano.node.jar', file(explicit).absolutePath
+            return
+        }
+        def dist = rootProject.resolveYanoDist(false)
+        if (dist) {
+            systemProperty 'yano.node.jar', new File(dist, 'yano.jar').absolutePath
+        } else {
+            logger.lifecycle("No Yano node resolved. The managed-node option will fail until you "
+                    + "run './gradlew fetchYanoNode', or pass -PyanoNodeJar=/path/to/yano.jar.")
+        }
+    }
+}
+
+// Headless M1 probe against a running Yano node, e.g.:
+//   ./gradlew :wallet-app:probe -PprobeArgs="status --network=devnet"
+tasks.register('probe', JavaExec) {
+    classpath = sourceSets.main.runtimeClasspath
+    mainClass = 'com.bloxbean.cardano.yano.wallet.app.probe.WalletProbe'
+    def probeArgs = (project.findProperty('probeArgs') ?: '').toString()
+    args(probeArgs.split('\\s+').findAll { !it.isEmpty() })
+}
+
+// HW-M1 probe (ADR-034): enumerate connected Ledger devices and read the
+// Cardano app version. Connect + unlock the Ledger and open the Cardano app,
+// then: ./gradlew :wallet-app:ledgerProbe
+tasks.register('ledgerProbe', JavaExec) {
+    group = 'verification'
+    description = 'Detect connected Ledger devices and print the Cardano app version'
+    classpath = sourceSets.main.runtimeClasspath
+    mainClass = 'com.bloxbean.cardano.yano.wallet.app.probe.LedgerProbe'
+    jvmArgs '--enable-native-access=ALL-UNNAMED'
+}
+
+// ADR-036 Y-M1 probe: YubiKey HMAC-SHA1 challenge-response round-trip. Configure
+// a slot first (ykman otp chalresp --generate 2), then:
+//   ./gradlew :wallet-app:yubikeyProbe            (slot 2)
+//   ./gradlew :wallet-app:yubikeyProbe -Pslot=1
+tasks.register('yubikeyProbe', JavaExec) {
+    group = 'verification'
+    description = 'Run a YubiKey HMAC-SHA1 challenge-response round-trip and check it is deterministic'
+    classpath = sourceSets.main.runtimeClasspath
+    mainClass = 'com.bloxbean.cardano.yano.wallet.app.probe.YubiKeyProbe'
+    jvmArgs '--enable-native-access=ALL-UNNAMED'
+    if (project.hasProperty('slot')) {
+        args(project.property('slot').toString())
+    }
+}
+
+// ADR-036 Y-M2 probe: FIDO2 hmac-secret enrol + derive round-trip. No slot setup
+// needed; uses the key's FIDO2 PIN if set, else touch-only.
+//   ./gradlew :wallet-app:fido2Probe
+tasks.register('fido2Probe', JavaExec) {
+    group = 'verification'
+    description = 'Enrol a throwaway FIDO2 hmac-secret credential and verify the derived secret is deterministic'
+    classpath = sourceSets.main.runtimeClasspath
+    mainClass = 'com.bloxbean.cardano.yano.wallet.app.probe.Fido2Probe'
+    jvmArgs '--enable-native-access=ALL-UNNAMED'
+    standardInput = System.in
+}
+
+// HW-M3 signing probe (ADR-034): stream a self-send tx to the Ledger and check
+// the device tx hash equals the host's. ./gradlew :wallet-app:ledgerSignProbe
+tasks.register('ledgerSignProbe', JavaExec) {
+    group = 'verification'
+    description = 'Sign a test tx on a connected Ledger and verify the tx hash matches the host'
+    classpath = sourceSets.main.runtimeClasspath
+    mainClass = 'com.bloxbean.cardano.yano.wallet.app.probe.LedgerSignProbe'
+    jvmArgs '--enable-native-access=ALL-UNNAMED'
+}
+
+// HW-M3 end-to-end: sign a funded preprod self-send on the Ledger and submit via
+// a Yano node. ./gradlew :wallet-app:ledgerSignSubmitProbe -PnodeUrl=http://localhost:7070/api/v1/
+tasks.register('ledgerSignSubmitProbe', JavaExec) {
+    group = 'verification'
+    description = 'Sign a funded preprod self-send on a Ledger and submit it through a Yano node'
+    classpath = sourceSets.main.runtimeClasspath
+    mainClass = 'com.bloxbean.cardano.yano.wallet.app.probe.LedgerSignSubmitProbe'
+    jvmArgs '--enable-native-access=ALL-UNNAMED'
+    if (project.hasProperty('nodeUrl')) {
+        args(project.property('nodeUrl'))
+    }
+}
+
+// --- Native packaging (jpackage) ---
+// Produces a self-contained Yano Wallet with a bundled open-source JRE and the
+// bundled node jar, so an end user needs no manual Java install. jpackage cannot
+// cross-compile — build each OS on its own machine. Build/jlink on an OpenJDK
+// (Temurin/Liberica, GPLv2+CE) so the bundled runtime is redistributable.
+def isWindows = System.getProperty('os.name').toLowerCase().contains('win')
+def isMac = System.getProperty('os.name').toLowerCase().contains('mac')
+
+// Stage the app jar + all runtime deps (JavaFX platform + hid4java native jars)
+// plus the node jar into one input dir jpackage bundles.
+def jpackageInput = layout.buildDirectory.dir('jpackage-input')
+// Bundle the node so the managed one-click node works from the installer. It is
+// the whole DISTRIBUTION (yano.jar + config/), not a lone jar: the node reads
+// genesis from config/network/<network>/ at runtime and cannot bootstrap a real
+// network without it. Resolved by gradle/yano-node.gradle — the pinned release,
+// the shared cache, or -PyanoDist for a locally built node. Pass
+// -PskipNodeBundle for an external-node-only package.
+def bundleNode = !project.hasProperty('skipNodeBundle')
+tasks.register('stageForJpackage', Copy) {
+    dependsOn tasks.named('jar')
+    if (bundleNode) {
+        dependsOn ':fetchYanoNode'
+    }
+    into jpackageInput
+    from configurations.runtimeClasspath
+    from tasks.named('jar')
+    if (bundleNode) {
+        from({ rootProject.resolveYanoDist(true) }) { into 'yano-node' }
+    }
+    duplicatesStrategy = DuplicatesStrategy.EXCLUDE
+}
+
+// The bundled JRE runs BOTH the JavaFX UI and the managed node child process
+// (NodeLocator launches <java.home>/bin/java -jar yano.jar). The node is a full
+// Quarkus/RocksDB/Yaci app, so we bundle every JDK module (ALL-MODULE-PATH)
+// rather than guess a minimal set — a missing module would silently break the
+// packaged node. Size cost is minor next to the bundled node itself.
+tasks.register('jlinkRuntime', Exec) {
+    group = 'distribution'
+    description = 'Build the bundled open-source JRE (jlink) for the UI + managed node'
+    def javaHome = System.getProperty('java.home')
+    def out = layout.buildDirectory.dir('runtime').get().asFile
+    doFirst { project.delete(out) }
+    // ALL-MODULE-PATH needs an explicit module path to the JDK's own modules.
+    commandLine "${javaHome}/bin/jlink" + (isWindows ? '.exe' : ''),
+            '--module-path', "${javaHome}/jmods",
+            '--add-modules', 'ALL-MODULE-PATH',
+            '--output', out.absolutePath,
+            '--strip-debug', '--no-header-files', '--no-man-pages'
+    outputs.dir out
+}
+
+// jpackage needs a numeric version with a >= 1 major (macOS forbids 0.x), so a
+// pre-1.0 project version maps to 1.0.0. Override with -PappVersion=<x.y.z>.
+def numericVersion = project.version.toString().replaceAll('[^0-9.].*$', '').replaceAll('\\.$', '')
+def installerVersion = project.hasProperty('appVersion') ? project.property('appVersion').toString()
+        : ((numericVersion && !numericVersion.startsWith('0')) ? numericVersion : '1.0.0')
+// Platform icon (macOS .icns / Windows .ico / Linux .png), built from the Yano mark.
+def appIcon = file('packaging/YanoWallet.'
+        + (isWindows ? 'ico' : (isMac ? 'icns' : 'png')))
+
+def jpackageArgs = { List extra ->
+    def jpackageBin = "${System.getProperty('java.home')}/bin/jpackage" + (isWindows ? '.exe' : '')
+    def mainJar = tasks.named('jar').get().archiveFileName.get()
+    def dest = layout.buildDirectory.dir('dist').get().asFile
+    def base = [jpackageBin,
+                '--name', 'Yano Wallet',
+                '--app-version', installerVersion,
+                '--vendor', 'Bloxbean',
+                '--input', jpackageInput.get().asFile.absolutePath,
+                '--main-jar', mainJar,
+                '--main-class', 'com.bloxbean.cardano.yano.wallet.app.YanoWalletApp',
+                '--runtime-image', layout.buildDirectory.dir('runtime').get().asFile.absolutePath,
+                '--java-options', '--enable-native-access=ALL-UNNAMED',
+                // $APPDIR resolves to the bundled app dir at runtime; NodeLocator
+                // reads the yano.node.jar system property first and derives the
+                // node's working dir as the ancestor holding config/ — here,
+                // $APPDIR/yano-node/ (the unpacked distribution).
+                '--java-options', '-Dyano.node.jar=$APPDIR/yano-node/yano.jar',
+                '--dest', dest.absolutePath]
+    if (appIcon.exists()) {
+        base += ['--icon', appIcon.absolutePath]
+    }
+    return base + extra
+}
+
+// Portable self-contained app image (fastest; no platform installer tooling).
+// ./gradlew :wallet-app:jpackage   (also build the node jar: ./gradlew :app:build)
+tasks.register('jpackage', Exec) {
+    group = 'distribution'
+    description = 'Build the portable Yano Wallet app image (bundled JRE + node)'
+    dependsOn 'stageForJpackage', 'jlinkRuntime'
+    doFirst {
+        def dest = layout.buildDirectory.dir('dist').get().asFile
+        dest.mkdirs()
+        project.delete(new File(dest, isMac ? 'Yano Wallet.app' : 'Yano Wallet'))
+    }
+    commandLine jpackageArgs(['--type', 'app-image'])
+}
+
+// Native installer for distribution: dmg (mac, built-in), msi (Windows, needs
+// WiX), deb (Linux, needs dpkg). Override with -PinstallerType=pkg|exe|rpm.
+// ./gradlew :wallet-app:jpackageInstaller
+tasks.register('jpackageInstaller', Exec) {
+    group = 'distribution'
+    def installerType = (project.findProperty('installerType')
+            ?: (isWindows ? 'msi' : (isMac ? 'dmg' : 'deb'))).toString()
+    description = "Build the native Yano Wallet installer (${installerType})"
+    dependsOn 'stageForJpackage', 'jlinkRuntime'
+    doFirst { layout.buildDirectory.dir('dist').get().asFile.mkdirs() }
+    commandLine jpackageArgs(['--type', installerType])
+}
+
+// Portable "bring your own Java" zip: the app + all deps under lib/, the node
+// jar, and launch scripts (src/dist/). No bundled JRE — the user runs it with
+// their own Java 25+. Per-OS like the installers, since JavaFX + hardware-wallet
+// natives on the runtime classpath are platform-specific.
+// ./gradlew :wallet-app:walletZip
+tasks.register('walletZip', Zip) {
+    group = 'distribution'
+    description = 'Portable zip (jars + launch scripts) for users with their own Java 25+'
+    dependsOn tasks.named('jar')
+    if (bundleNode) {
+        dependsOn ':fetchYanoNode'
+    }
+    archiveFileName = "yano-wallet-${project.version}.zip"
+    destinationDirectory = layout.buildDirectory.dir('dist')
+    def distRoot = "yano-wallet-${project.version}"
+    into(distRoot) {
+        into('lib') {
+            from configurations.runtimeClasspath
+            from tasks.named('jar')
+        }
+        if (bundleNode) {
+            // The full node distribution under yano-node/ (matches the
+            // yano.node.jar path the launch scripts set).
+            into('yano-node') {
+                from({ rootProject.resolveYanoDist(true) })
+            }
+        }
+        from('src/dist') {
+            include 'yano-wallet.sh'
+            filePermissions { unix('755') }
+        }
+        from('src/dist') {
+            include 'yano-wallet.bat', 'README.txt'
+        }
+    }
+}

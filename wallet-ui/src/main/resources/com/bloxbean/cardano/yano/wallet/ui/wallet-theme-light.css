@@ -1,0 +1,36 @@
+/* Yano Wallet — Light theme.
+   Override layer: loaded AFTER wallet.css, so these .root values win. Only the
+   palette + semantic tint tokens change; every structural rule in wallet.css is
+   reused. Tints flip to light-bg / dark-fg for readability on light surfaces. */
+.root {
+    -surface-0: #eef2f7;
+    -surface-1: #ffffff;
+    -surface-2: #f1f4f9;
+    -surface-3: #e3e8f1;
+    -border: #d3dae6;
+    -text-1: #1a2230;
+    -text-2: #5b6676;
+    -accent: #2f6fed;
+    -accent-2: #0f9fc0;
+    -ok: #1f9d57;
+    -warn: #b5791f;
+    -bad: #d23b3b;
+
+    -ok-bg: derive(-ok, 82%);
+    -ok-fg: derive(-ok, -22%);
+    -warn-bg: derive(-warn, 82%);
+    -warn-fg: derive(-warn, -28%);
+    -bad-bg: derive(-bad, 82%);
+    -bad-fg: derive(-bad, -18%);
+    -net-bg: derive(-accent, 84%);
+    -net-fg: derive(-accent, -18%);
+    -sel-bg: derive(-accent, 86%);
+    -sel-fg: derive(-accent, -25%);
+    -warn-text: derive(-warn, -30%);
+    -toast-ok-bg: derive(-ok, -6%);
+    -toast-bad-bg: derive(-bad, -4%);
+    -hero-from: #eaf1ff;
+    -hero-to: #dce8fb;
+    -hero-border: #c9dbfb;
+    -bg-glow: #e7eefc;
+}

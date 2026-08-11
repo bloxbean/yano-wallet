@@ -1,0 +1,296 @@
+/* Yano Wallet — dark theme (ADR-033 M3)
+   Palette: deep graphite surfaces, Cardano-blue → cyan accent. */
+
+.root {
+    -surface-0: #0d1117;
+    -surface-1: #151b24;
+    -surface-2: #1c2430;
+    -surface-3: #232d3c;
+    -border: #2a3547;
+    -text-1: #e8edf4;
+    -text-2: #8b98ab;
+    -accent: #2f6fed;
+    -accent-2: #21c8de;
+    -ok: #2fbf71;
+    -warn: #e0a63c;
+    -bad: #e05c5c;
+
+    /* Semantic tint tokens — themes override these so status/chip colors flip
+       correctly on a light background. Dark values reproduce the original
+       derive() results exactly (no visual change to the dark theme). */
+    -ok-bg: derive(-ok, -68%);
+    -ok-fg: derive(-ok, 30%);
+    -warn-bg: derive(-warn, -70%);
+    -warn-fg: derive(-warn, 25%);
+    -bad-bg: derive(-bad, -68%);
+    -bad-fg: derive(-bad, 25%);
+    -net-bg: derive(-accent, -60%);
+    -net-fg: derive(-accent-2, 20%);
+    -sel-bg: derive(-accent, -55%);
+    -sel-fg: derive(-accent-2, 25%);
+    -warn-text: derive(-warn, 20%);
+    -toast-ok-bg: derive(-ok, -25%);
+    -toast-bad-bg: derive(-bad, -20%);
+    -hero-from: #16233c;
+    -hero-to: #101826;
+    -hero-border: #27405f;
+    -bg-glow: #16233c;
+
+    -fx-base: -surface-0;
+    -fx-background: -surface-0;
+    -fx-background-color: -surface-0;
+    -fx-text-fill: -text-1;
+    -fx-font-family: "Inter", "SF Pro Text", "Segoe UI", "Helvetica Neue", sans-serif;
+    -fx-font-size: 13px;
+    -fx-focus-color: -accent;
+    -fx-faint-focus-color: transparent;
+}
+
+.label { -fx-text-fill: -text-1; }
+.muted { -fx-text-fill: -text-2; }
+.mono { -fx-font-family: "JetBrains Mono", "SF Mono", "Menlo", monospace; -fx-font-size: 12px; }
+
+/* --- shell --- */
+.shell { -fx-background-color: -surface-0; }
+.sidebar {
+    -fx-background-color: -surface-1;
+    -fx-border-color: transparent -border transparent transparent;
+    -fx-border-width: 0 1 0 0;
+}
+.brand { -fx-font-size: 19px; -fx-font-weight: 800; -fx-text-fill: -text-1; }
+.brand-large { -fx-font-size: 34px; -fx-font-weight: 800; -fx-text-fill: -text-1; }
+.brand-sub { -fx-text-fill: -text-2; -fx-font-size: 12px; }
+
+.nav-button {
+    -fx-background-color: transparent;
+    -fx-text-fill: -text-2;
+    -fx-background-radius: 10;
+    -fx-padding: 9 12 9 12;
+    -fx-cursor: hand;
+    -fx-font-weight: 600;
+}
+.nav-button:hover { -fx-background-color: -surface-2; -fx-text-fill: -text-1; }
+.nav-active { -fx-background-color: -surface-3; -fx-text-fill: -text-1; }
+.nav-active .nav-icon { -fx-background-color: -accent-2; }
+.nav-icon { -fx-background-color: -text-2; }
+.nav-button:hover .nav-icon { -fx-background-color: -text-1; }
+
+/* --- cards & layout --- */
+.screen-scroll { -fx-background-color: transparent; -fx-background: transparent; }
+.screen-scroll > .viewport { -fx-background-color: transparent; }
+.screen-title { -fx-font-size: 20px; -fx-font-weight: 700; }
+.card {
+    -fx-background-color: -surface-1;
+    -fx-background-radius: 14;
+    -fx-border-color: -border;
+    -fx-border-radius: 14;
+    -fx-padding: 18;
+}
+.card-title { -fx-text-fill: -text-2; -fx-font-size: 12px; -fx-font-weight: 700; }
+.hero-card {
+    -fx-background-color: linear-gradient(to bottom right, -hero-from, -hero-to);
+    -fx-border-color: -hero-border;
+}
+.balance-hero { -fx-font-size: 38px; -fx-font-weight: 800; -fx-text-fill: -text-1; }
+.balance-sub { -fx-font-size: 17px; -fx-font-weight: 700; }
+.total-amount { -fx-font-weight: 800; }
+.list-row {
+    -fx-background-color: -surface-2;
+    -fx-background-radius: 10;
+    -fx-padding: 10 14 10 14;
+}
+.wallet-name { -fx-font-weight: 700; }
+.primary-address { -fx-font-size: 13px; }
+
+/* --- buttons --- */
+.primary-button {
+    -fx-background-color: linear-gradient(to right, -accent, derive(-accent-2, -10%));
+    -fx-text-fill: white;
+    -fx-font-weight: 700;
+    -fx-background-radius: 10;
+    -fx-padding: 9 18 9 18;
+    -fx-cursor: hand;
+}
+.primary-button:hover { -fx-opacity: 0.92; }
+.primary-button:disabled { -fx-opacity: 0.5; }
+.ghost-button, .ghost-button-small {
+    -fx-background-color: transparent;
+    -fx-text-fill: -text-1;
+    -fx-border-color: -border;
+    -fx-border-radius: 10;
+    -fx-background-radius: 10;
+    -fx-padding: 9 16 9 16;
+    -fx-cursor: hand;
+}
+.ghost-button-small { -fx-padding: 4 10 4 10; -fx-font-size: 11px; }
+.ghost-button:hover, .ghost-button-small:hover { -fx-background-color: -surface-2; }
+.ghost-button .nav-icon { -fx-background-color: -text-1; }
+
+/* Sidebar active-account chip; click to switch accounts (ADR-037). */
+.account-chip {
+    -fx-background-color: -surface-2;
+    -fx-text-fill: -text-1;
+    -fx-border-color: -border;
+    -fx-border-radius: 8;
+    -fx-background-radius: 8;
+    -fx-padding: 7 10 7 10;
+    -fx-font-size: 11px;
+    -fx-font-weight: 600;
+    -fx-cursor: hand;
+}
+.account-chip:hover { -fx-border-color: -accent; }
+
+/* Borderless in-card action, e.g. "+ Add account" (ADR-037). */
+.link-button {
+    -fx-background-color: transparent;
+    -fx-text-fill: -accent;
+    -fx-border-color: transparent;
+    -fx-padding: 4 2 4 2;
+    -fx-font-size: 12px;
+    -fx-cursor: hand;
+}
+.link-button:hover { -fx-underline: true; }
+
+/* --- chips --- */
+.chip {
+    -fx-background-radius: 20;
+    -fx-padding: 3 10 3 10;
+    -fx-font-size: 11px;
+    -fx-font-weight: 700;
+}
+.chip-neutral { -fx-background-color: -surface-3; -fx-text-fill: -text-2; }
+.chip-ok { -fx-background-color: -ok-bg; -fx-text-fill: -ok-fg; }
+.chip-warn { -fx-background-color: -warn-bg; -fx-text-fill: -warn-fg; }
+.chip-bad { -fx-background-color: -bad-bg; -fx-text-fill: -bad-fg; }
+.chip-network { -fx-background-color: -net-bg; -fx-text-fill: -net-fg; }
+/* A chip that is also a button (the sidebar network pill opens Connect). */
+.chip-button { -fx-cursor: hand; -fx-border-color: transparent; }
+.chip-button:hover { -fx-background-color: -sel-bg; -fx-text-fill: -sel-fg; }
+.chip-sync { -fx-background-color: -surface-3; -fx-text-fill: -text-2; }
+.sync-ok { -fx-background-color: -ok-bg; -fx-text-fill: -ok-fg; }
+.sync-warn { -fx-background-color: -warn-bg; -fx-text-fill: -warn-fg; }
+.sync-bad { -fx-background-color: -bad-bg; -fx-text-fill: -bad-fg; }
+
+/* Thin progress bar under the sync pill / on the connect screen. */
+.sync-progress { -fx-pref-height: 5px; -fx-max-height: 5px; }
+.sync-progress > .track { -fx-background-color: -surface-3; -fx-background-radius: 3; }
+.sync-progress > .bar { -fx-background-color: -accent; -fx-background-radius: 3; -fx-background-insets: 0; }
+
+/* Node log viewer (Connect screen peek + Settings → Advanced). */
+.node-log { -fx-font-family: "JetBrains Mono", "SF Mono", "Menlo", monospace; -fx-font-size: 11px; }
+.node-log .content { -fx-background-color: -surface-2; }
+
+/* Live page stat tiles. */
+.stat-value { -fx-font-size: 24px; -fx-font-weight: 800; -fx-text-fill: -text-1; }
+.stat-caption { -fx-text-fill: -text-2; -fx-font-size: 11px; -fx-font-weight: 700; }
+
+/* --- inputs --- */
+.text-field, .password-field, .text-area {
+    -fx-background-color: -surface-2;
+    -fx-background-radius: 10;
+    -fx-border-color: -border;
+    -fx-border-radius: 10;
+    -fx-text-fill: -text-1;
+    -fx-prompt-text-fill: -text-2;
+    -fx-padding: 9 12 9 12;
+}
+.text-area .content { -fx-background-color: -surface-2; -fx-background-radius: 10; }
+.text-field:focused, .password-field:focused, .text-area:focused { -fx-border-color: -accent; }
+
+/* --- onboarding --- */
+.onboarding { -fx-background-color: radial-gradient(center 50% 0%, radius 90%, -bg-glow, -surface-0); }
+
+/* Account picker: pinned brand + entry actions, scrolling list between them. */
+.onboarding-header { -fx-padding: 30 26 16 26; }
+.onboarding-footer {
+    -fx-padding: 16 26 22 26;
+    -fx-border-color: -border transparent transparent transparent;
+    -fx-border-width: 1 0 0 0;
+}
+.wallet-list { -fx-padding: 2 26 18 26; }
+.group-header { -fx-text-fill: -text-2; -fx-font-size: 11px; -fx-font-weight: 800; }
+.account-row {
+    -fx-background-color: -surface-1;
+    -fx-background-radius: 10;
+    -fx-border-radius: 10;
+    -fx-border-color: transparent;
+    -fx-border-width: 1;
+    -fx-padding: 9 14 9 14;
+    -fx-cursor: hand;
+}
+.account-row:hover { -fx-background-color: -surface-2; }
+.account-row:focused { -fx-background-color: -surface-2; -fx-border-color: -accent; }
+.row-address { -fx-text-fill: -text-2; -fx-font-size: 11px; }
+.chevron { -fx-text-fill: -text-2; -fx-font-size: 17px; }
+.mnemonic-word {
+    -fx-background-color: -surface-2;
+    -fx-background-radius: 8;
+    -fx-padding: 6 10 6 10;
+    -fx-font-family: "JetBrains Mono", "Menlo", monospace;
+    -fx-font-size: 12px;
+}
+.warning-text { -fx-text-fill: -warn-text; -fx-font-weight: 600; }
+/* ADR-042: the "not verified" / "scripts fail" lines in a signing prompt. These
+   are the lines that must be hardest to miss, so they get the warning colour and
+   weight rather than inheriting body text. */
+.approval-warning { -fx-text-fill: -warn-text; -fx-font-weight: 600; }
+.approval-card { -fx-border-color: derive(-accent, -20%); }
+
+/* --- modal confirm --- */
+.modal-scrim {
+    -fx-background-color: rgba(0, 0, 0, 0.55);
+}
+.modal-card {
+    -fx-effect: dropshadow(gaussian, rgba(0, 0, 0, 0.5), 24, 0.2, 0, 8);
+    -fx-padding: 22;
+}
+
+/* --- connect screen --- */
+.mode-toggle {
+    -fx-background-color: -surface-2;
+    -fx-text-fill: -text-1;
+    -fx-border-color: -border;
+    -fx-border-radius: 10;
+    -fx-background-radius: 10;
+    -fx-padding: 10 14 10 14;
+    -fx-cursor: hand;
+    -fx-font-weight: 600;
+}
+.mode-toggle:selected {
+    -fx-background-color: -sel-bg;
+    -fx-border-color: -accent;
+    -fx-text-fill: -sel-fg;
+}
+
+/* --- combo box --- */
+.combo-box {
+    -fx-background-color: -surface-2;
+    -fx-background-radius: 10;
+    -fx-border-color: -border;
+    -fx-border-radius: 10;
+}
+.combo-box .list-cell { -fx-text-fill: -text-1; -fx-padding: 6 10 6 10; }
+.combo-box .arrow, .combo-box .arrow-button { -fx-background-color: transparent; }
+.combo-box .arrow { -fx-background-color: -text-2; }
+.combo-box-popup .list-view {
+    -fx-background-color: -surface-2;
+    -fx-border-color: -border;
+    -fx-background-radius: 10;
+}
+.combo-box-popup .list-cell:filled:hover { -fx-background-color: -surface-3; }
+.progress-indicator { -fx-progress-color: -accent-2; }
+
+/* --- toast --- */
+.toast {
+    -fx-background-radius: 10;
+    -fx-padding: 10 18 10 18;
+    -fx-font-weight: 700;
+    -fx-text-fill: white;
+}
+.toast-ok { -fx-background-color: -toast-ok-bg; }
+.toast-error { -fx-background-color: -toast-bad-bg; }
+
+/* --- scrollbars --- */
+.scroll-bar { -fx-background-color: transparent; }
+.scroll-bar .thumb { -fx-background-color: -surface-3; -fx-background-radius: 6; }
+.scroll-bar .increment-button, .scroll-bar .decrement-button { -fx-padding: 0; }

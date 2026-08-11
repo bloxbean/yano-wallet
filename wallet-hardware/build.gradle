@@ -1,0 +1,32 @@
+plugins {
+    id 'java-library'
+}
+
+java {
+    sourceCompatibility = '25'
+    targetCompatibility = '25'
+}
+
+dependencies {
+    // Implements the hardware-signer SPI + watch-only keystore model (ADR-034).
+    api project(':wallet-core')
+
+    // USB-HID transport (JNA-backed; bundles hidapi natives). Device code lives
+    // ONLY in this module and the wallet UI JVM — never the node.
+    implementation libs.hid4java
+
+    // HKDF for the FIDO2 CTAP2 PIN/UV auth protocol v2 (ADR-036 Y-M2). JCA has
+    // no HKDF; the rest (ECDH/AES/HMAC) uses the JDK.
+    implementation libs.bouncycastle.bcprov
+
+    implementation libs.slf4j.api
+
+    testImplementation libs.junit.jupiter.api
+    testRuntimeOnly libs.junit.jupiter.engine
+    testRuntimeOnly libs.junit.platform.launcher
+    testImplementation libs.assertj.core
+}
+
+test {
+    useJUnitPlatform()
+}

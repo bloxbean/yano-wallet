@@ -1,0 +1,56 @@
+{
+  "manifest_version": 3,
+  "name": "Yano Wallet Connector",
+  "version": "0.1.0",
+  "description": "Connect Cardano dApps to your Yano full-node desktop wallet (CIP-30). Your keys and node stay in the desktop app.",
+  "key": "MIIBIjANBgkqhkiG9w0BAQEFAAOCAQ8AMIIBCgKCAQEAvf6KKvTiPcI/oFRh4I8sML60Q5hfuJrR4fvlNH9rIeG6X0VdXDy2i0EWTMOMuYS9qmZU0ZjHc8Cr8dATrR640hz6gvWrw8vRnOLpxDdnJsskF8XvnNrz34hH2YRmYsrb2/2AdKMNRd6vHfN89KQEpaRj1MdNUBK+A3Q1v46AYuH9CUAQTUbijvewf2WUg2WrLBszrw4gRfgOflSgd6eTbhMIuGULpt4FXY02laZrRCWFHuoiBo8R9/5BbqTU2FTUl3IdYVu3W8qn+qfPbpBbGSTmSMQauMyl6ddnTrcN6Q9OaBPP6ACGKZE/tSJc606N2Fu+c5dEADG7LBY05zUr+wIDAQAB",
+  "icons": {
+    "16": "icons/logo-16.png",
+    "48": "icons/logo-48.png",
+    "128": "icons/logo-128.png"
+  },
+  "action": {
+    "default_popup": "popup.html",
+    "default_title": "Yano Wallet Connector",
+    "default_icon": {
+      "16": "icons/logo-16.png",
+      "48": "icons/logo-48.png"
+    }
+  },
+  "background": {
+    "service_worker": "src/background.js"
+  },
+  "content_scripts": [
+    {
+      "matches": [
+        "http://*/*",
+        "https://*/*"
+      ],
+      "js": [
+        "src/inject.js"
+      ],
+      "run_at": "document_start",
+      "world": "MAIN"
+    },
+    {
+      "matches": [
+        "http://*/*",
+        "https://*/*"
+      ],
+      "js": [
+        "src/content.js"
+      ],
+      "run_at": "document_start",
+      "world": "ISOLATED"
+    }
+  ],
+  "host_permissions": [
+    "ws://127.0.0.1/*",
+    "wss://127.0.0.1/*",
+    "http://127.0.0.1/*"
+  ],
+  "permissions": [
+    "nativeMessaging",
+    "storage"
+  ]
+}

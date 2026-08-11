@@ -1,0 +1,123 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <title>Yano CIP-30 test dApp</title>
+  <style>
+    body { font: 14px/1.55 -apple-system, Segoe UI, Roboto, sans-serif; max-width: 820px;
+      margin: 40px auto; padding: 0 20px; background: #12162c; color: #eef1ff; }
+    h1 { font-size: 20px; } h1 small { color: #9aa4d6; font-weight: 400; font-size: 13px; }
+    .card { background: #1c2140; border: 1px solid #2c3566; border-radius: 10px; padding: 16px; margin: 14px 0; }
+    button { padding: 7px 12px; margin: 4px 6px 4px 0; border: 0; border-radius: 7px;
+      background: #6ea8ff; color: #10142c; font-weight: 600; cursor: pointer; }
+    button.ghost { background: #2c3566; color: #eef1ff; }
+    button:disabled { opacity: .5; cursor: default; }
+    pre { background: #0d1024; border-radius: 8px; padding: 12px; overflow-x: auto;
+      white-space: pre-wrap; word-break: break-all; font-size: 12px; color: #c9d2ff; }
+    .muted { color: #9aa4d6; } .ok { color: #46d18a; } .bad { color: #ff6b6b; }
+  </style>
+</head>
+<body>
+  <h1>Yano CIP-30 test dApp <small>read-only (M1)</small></h1>
+  <p class="muted">Serve this over http (not file://) so the extension injects, e.g.
+    <code>python3 -m http.server 8000</code> in this folder, then open
+    <code>http://localhost:8000/</code>. The Yano wallet must be running,
+    unlocked, and connected to a node.</p>
+
+  <div class="card">
+    <div id="detect" class="muted">Looking for window.cardano.yano…</div>
+    <button id="connect" disabled>Connect Yano</button>
+    <span id="connState" class="muted"></span>
+  </div>
+
+  <div class="card">
+    <button class="ghost m" data-m="getNetworkId" disabled>getNetworkId</button>
+    <button class="ghost m" data-m="getUsedAddresses" disabled>getUsedAddresses</button>
+    <button class="ghost m" data-m="getChangeAddress" disabled>getChangeAddress</button>
+    <button class="ghost m" data-m="getRewardAddresses" disabled>getRewardAddresses</button>
+    <button class="ghost m" data-m="getBalance" disabled>getBalance</button>
+    <button class="ghost m" data-m="getUtxos" disabled>getUtxos</button>
+    <button class="ghost m" data-m="getCollateral" disabled>getCollateral</button>
+    <button class="ghost" id="signData" disabled>signData (M2)</button>
+  </div>
+
+  <div class="card">
+    <strong>signTx + submitTx (M2)</strong>
+    <p class="muted">The full "send ₳ to yourself" test lives in <code>dev/tx-demo/</code> — a small
+      Vite + MeshJS app (Mesh needs a bundler, so it can't run from this static page):
+      <code>cd dev/tx-demo &amp;&amp; npm install &amp;&amp; npm run dev</code>, then open localhost:3000.</p>
+  </div>
+
+  <div class="card"><strong>Output</strong><pre id="out">—</pre></div>
+
+  <script>
+    const out = document.getElementById('out');
+    const log = (label, value) => {
+      out.textContent = label + '\n' +
+        (typeof value === 'string' ? value : JSON.stringify(value, null, 2));
+    };
+    let api = null;
+
+    function findWallet() {
+      const w = window.cardano && window.cardano.yano;
+      const detect = document.getElementById('detect');
+      if (w) {
+        detect.innerHTML = '<span class="ok">✓ Found window.cardano.yano</span> (api ' +
+          w.apiVersion + ')';
+        document.getElementById('connect').disabled = false;
+      } else {
+        detect.innerHTML = '<span class="bad">✗ window.cardano.yano not found</span> — ' +
+          'is the extension loaded and this page served over http?';
+      }
+    }
+
+    document.getElementById('connect').addEventListener('click', async () => {
+      const state = document.getElementById('connState');
+      state.textContent = ' connecting…';
+      try {
+        api = await window.cardano.yano.enable();
+        state.innerHTML = ' <span class="ok">connected</span>';
+        document.querySelectorAll('button.m').forEach(b => (b.disabled = false));
+        document.getElementById('signData').disabled = false;
+        log('enable()', 'connected — approve happened in the Yano desktop app');
+      } catch (e) {
+        state.innerHTML = ' <span class="bad">refused/failed</span>';
+        log('enable() error', e);
+      }
+    });
+
+    document.querySelectorAll('button.m').forEach(btn => {
+      btn.addEventListener('click', async () => {
+        const method = btn.dataset.m;
+        try {
+          const result = await api[method]();
+          log(method + '() →', result);
+        } catch (e) {
+          log(method + '() error', e);
+        }
+      });
+    });
+
+    // signData: sign an arbitrary payload with the wallet's first used address (CIP-8).
+    document.getElementById('signData').addEventListener('click', async () => {
+      try {
+        const addrs = await api.getUsedAddresses();
+        if (!addrs || !addrs.length) { log('signData', 'no used addresses to sign with'); return; }
+        const payload = [...new TextEncoder().encode('Yano CIP-30 signData test')]
+          .map(b => b.toString(16).padStart(2, '0')).join('');
+        const sig = await api.signData(addrs[0], payload);
+        log('signData(usedAddresses[0], "Yano CIP-30 signData test") →', sig);
+      } catch (e) {
+        log('signData error', e);
+      }
+    });
+
+    // window.cardano is injected at document_start; poll briefly in case of timing.
+    let tries = 0;
+    const timer = setInterval(() => {
+      findWallet();
+      if ((window.cardano && window.cardano.yano) || ++tries > 20) clearInterval(timer);
+    }, 150);
+  </script>
+</body>
+</html>

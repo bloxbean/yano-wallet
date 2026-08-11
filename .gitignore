@@ -1,0 +1,27 @@
+build/
+.gradle/
+out/
+bin/
+
+# Local link to a node build (see gradle/yano-node.gradle). Never committed.
+.yano-node/
+
+# Never commit node or wallet binaries. The Yano node distribution is ~256 MB and
+# is resolved at build time (gradle/yano-node.gradle) — see README.
+*.jar
+!gradle/wrapper/gradle-wrapper.jar
+*.zip
+*.dmg
+*.msi
+*.deb
+*.pkg
+
+# Browser extension signing key — pins the extension id; must never be published.
+wallet-connector/extension-key.pem
+wallet-connector/**/node_modules/
+wallet-connector/**/dist/
+
+.idea/
+*.iml
+.vscode/
+.DS_Store

@@ -1,0 +1,113 @@
+package com.bloxbean.cardano.yano.wallet.ui.screens;
+
+import com.bloxbean.cardano.yano.wallet.ui.Shell;
+import com.bloxbean.cardano.yano.wallet.ui.contract.WalletUiController;
+import com.bloxbean.cardano.yano.wallet.ui.util.Ui;
+import javafx.geometry.Insets;
+import javafx.scene.Node;
+import javafx.scene.control.Button;
+import javafx.scene.control.Hyperlink;
+import javafx.scene.control.Label;
+import javafx.scene.control.ScrollPane;
+import javafx.scene.layout.StackPane;
+import javafx.scene.layout.VBox;
+
+/** Full transaction history from the node's address-tx index (ADR-033 M2). */
+public class HistoryScreen implements Shell.Screen {
+    private static final int PAGE_SIZE = 25;
+
+    private final WalletUiController controller;
+    private final StackPane overlay;
+    private final VBox listBox = new VBox(8);
+    private final Button moreButton = new Button("Load more");
+    private final ScrollPane root;
+    private int page = 1;
+
+    public HistoryScreen(WalletUiController controller, StackPane overlay) {
+        this.controller = controller;
+        this.overlay = overlay;
+        this.root = build();
+    }
+
+    private ScrollPane build() {
+        Label title = new Label("History");
+        title.getStyleClass().add("screen-title");
+
+        moreButton.getStyleClass().add("ghost-button");
+        moreButton.setOnAction(e -> loadPage(page + 1, false));
+
+        VBox card = Ui.card(null, listBox, moreButton);
+        VBox column = new VBox(16, title, card);
+        column.setPadding(new Insets(24));
+        column.setMaxWidth(860);
+        ScrollPane scroll = new ScrollPane(column);
+        scroll.setFitToWidth(true);
+        scroll.getStyleClass().add("screen-scroll");
+        return scroll;
+    }
+
+    @Override
+    public Node root() {
+        return root;
+    }
+
+    @Override
+    public void refresh() {
+        loadPage(1, true);
+    }
+
+    private void loadPage(int newPage, boolean reset) {
+        Ui.onFx(controller.history(newPage, PAGE_SIZE), txs -> {
+            if (reset) {
+                listBox.getChildren().clear();
+            }
+            page = newPage;
+            if (txs.isEmpty() && reset) {
+                listBox.getChildren().add(Ui.muted("No transactions yet"));
+            }
+            txs.forEach(tx -> listBox.getChildren().add(txRow(tx)));
+            // Page 1 may include a few local pending rows on top of the node
+            // page, so use >= (the node returned a full page → there may be more).
+            boolean maybeMore = txs.size() >= PAGE_SIZE;
+            moreButton.setVisible(maybeMore);
+            moreButton.setManaged(maybeMore);
+        }, error -> {
+            if (reset) {
+                listBox.getChildren().setAll(Ui.muted("History unavailable: " + error.getMessage()));
+                moreButton.setVisible(false);
+                moreButton.setManaged(false);
+            } else {
+                Ui.toast(overlay, "History failed: " + error.getMessage(), true);
+            }
+        });
+    }
+
+    private Node txRow(WalletUiController.TxItem tx) {
+        // Link the hash to a public explorer where one exists (mainnet/preprod/
+        // preview); on devnet/yaci-devkit there is none, so show plain text.
+        Node hash;
+        if (tx.explorerUrl() != null) {
+            Hyperlink link = new Hyperlink(Ui.middleEllipsis(tx.txHash(), 12));
+            link.getStyleClass().add("mono");
+            link.setOnAction(e -> Ui.openUrl(tx.explorerUrl()));
+            hash = link;
+        } else {
+            Label label = new Label(Ui.middleEllipsis(tx.txHash(), 12));
+            label.getStyleClass().add("mono");
+            hash = label;
+        }
+        Label status = Ui.chip(tx.status(), DashboardScreen.statusClass(tx.status()));
+        Label block = Ui.muted(tx.blockHeight() > 0 ? "block " + tx.blockHeight() : "");
+        Label time = Ui.muted(tx.timeText());
+        Button copy = new Button("Copy");
+        copy.getStyleClass().add("ghost-button-small");
+        copy.setOnAction(e -> {
+            Ui.copyToClipboard(tx.txHash());
+            Ui.toast(overlay, "Tx hash copied", false);
+        });
+        var row = Ui.row(12, hash, status, block, Ui.spacer(),
+                tx.amountText() != null ? new Label(tx.amountText()) : new Label(""), time, copy);
+        row.getStyleClass().add("list-row");
+        return row;
+    }
+}

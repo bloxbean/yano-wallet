@@ -1,0 +1,27 @@
+plugins {
+    id 'java-library'
+}
+
+java {
+    sourceCompatibility = '17'
+    targetCompatibility = '17'
+}
+
+// Deliberately ZERO runtime dependencies: this jar is copied outside the app
+// (Chrome launches it per dApp connection) and must start fast and stand alone.
+dependencies {
+    testImplementation libs.junit.jupiter.api
+    testRuntimeOnly libs.junit.jupiter.engine
+    testRuntimeOnly libs.junit.platform.launcher
+    testImplementation libs.assertj.core
+}
+
+jar {
+    manifest {
+        attributes 'Main-Class': 'com.bloxbean.cardano.yano.wallet.connector.proxy.Cip30NativeProxy'
+    }
+}
+
+test {
+    useJUnitPlatform()
+}

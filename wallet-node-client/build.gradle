@@ -1,0 +1,33 @@
+plugins {
+    id 'java-library'
+}
+
+java {
+    sourceCompatibility = '25'
+    targetCompatibility = '25'
+}
+
+dependencies {
+    api project(':wallet-core')
+    api libs.cardano.client.backend
+    implementation libs.cardano.client.backend.blockfrost
+
+    implementation libs.jackson.databind
+    implementation libs.slf4j.api
+
+    testImplementation libs.junit.jupiter.api
+    testRuntimeOnly libs.junit.jupiter.engine
+    testRuntimeOnly libs.junit.platform.launcher
+    testImplementation libs.assertj.core
+}
+
+test {
+    useJUnitPlatform()
+    // Opt-in live-node tests (ADR-042 SIM-M0/SIM-M5) read this; Gradle does not
+    // forward -D to the test JVM on its own. Absent → those tests stay skipped.
+    ['yano.live.node'].each { key ->
+        if (System.getProperty(key)) {
+            systemProperty key, System.getProperty(key)
+        }
+    }
+}

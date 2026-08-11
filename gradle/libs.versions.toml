@@ -1,0 +1,40 @@
+# Trimmed from the Yano repo's catalog to only what the wallet actually uses.
+# Note there is deliberately NO yaci / node entry: the wallet does not depend on
+# Yano as a library. It launches a released Yano distribution as a child process
+# and talks to it over REST (see gradle/yano-node.gradle).
+
+[versions]
+javafx = "25.0.2"
+cardano-client-lib = "0.8.0-pre4"
+
+[libraries]
+cardano-client-core = { module = "com.bloxbean.cardano:cardano-client-core", version.ref = "cardano-client-lib" }
+cardano-client-core-api = { module = "com.bloxbean.cardano:cardano-client-core-api", version.ref = "cardano-client-lib" }
+cardano-client-transaction-spec = { module = "com.bloxbean.cardano:cardano-client-transaction-spec", version.ref = "cardano-client-lib" }
+cardano-client-hd-wallet = { module = "com.bloxbean.cardano:cardano-client-hd-wallet", version.ref = "cardano-client-lib" }
+cardano-client-cip30 = { module = "com.bloxbean.cardano:cardano-client-cip30", version.ref = "cardano-client-lib" }
+cardano-client-cip20 = { module = "com.bloxbean.cardano:cardano-client-cip20", version.ref = "cardano-client-lib" }
+cardano-client-address = { module = "com.bloxbean.cardano:cardano-client-address", version.ref = "cardano-client-lib" }
+cardano-client-common = { module = "com.bloxbean.cardano:cardano-client-common", version.ref = "cardano-client-lib" }
+cardano-client-crypto = { module = "com.bloxbean.cardano:cardano-client-crypto", version.ref = "cardano-client-lib" }
+cardano-client-backend = { module = "com.bloxbean.cardano:cardano-client-backend", version.ref = "cardano-client-lib" }
+cardano-client-backend-blockfrost = { module = "com.bloxbean.cardano:cardano-client-backend-blockfrost", version.ref = "cardano-client-lib" }
+cardano-client-quicktx = { module = "com.bloxbean.cardano:cardano-client-quicktx", version.ref = "cardano-client-lib" }
+
+bouncycastle-bcprov = { module = "org.bouncycastle:bcprov-jdk18on", version = "1.83" }
+
+# Hardware wallet USB-HID transport (wallet-hardware, ADR-034). JNA-backed, bundles hidapi natives.
+hid4java = { module = "org.hid4java:hid4java", version = "0.8.0" }
+
+# Localhost WebSocket server for the CIP-30 dApp connector bridge (wallet-connector-host, ADR-035).
+java-websocket = { module = "org.java-websocket:Java-WebSocket", version = "1.6.0" }
+
+jackson-databind = "com.fasterxml.jackson.core:jackson-databind:2.17.0"
+
+slf4j-api = "org.slf4j:slf4j-api:2.0.11"
+slf4j-simple = "org.slf4j:slf4j-simple:2.0.11"
+
+junit-jupiter-api = "org.junit.jupiter:junit-jupiter-api:5.8.1"
+junit-jupiter-engine = "org.junit.jupiter:junit-jupiter-engine:5.8.1"
+junit-platform-launcher = "org.junit.platform:junit-platform-launcher:1.8.1"
+assertj-core = "org.assertj:assertj-core:3.21.0"

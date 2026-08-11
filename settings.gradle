@@ -1,0 +1,14 @@
+rootProject.name = 'yano-wallet'
+
+// Modules sit at the repo root, so the project names match what the build
+// scripts already reference (:wallet-core, :wallet-ui, …) and no projectDir
+// remapping is needed. wallet-connector/ is the browser extension — plain
+// files, not a Gradle module.
+include 'wallet-core'
+include 'wallet-hardware'
+include 'wallet-node-client'
+include 'wallet-node-launcher'
+include 'wallet-ui'
+include 'wallet-app'
+include 'wallet-connector-host'
+include 'wallet-connector-proxy'

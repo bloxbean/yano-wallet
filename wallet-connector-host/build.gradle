@@ -1,0 +1,38 @@
+plugins {
+    id 'java-library'
+}
+
+java {
+    sourceCompatibility = '25'
+    targetCompatibility = '25'
+}
+
+dependencies {
+    // The CIP-30 desktop bridge (ADR-035): a localhost WebSocket server + CIP-30
+    // request dispatch + wire encoding. Pure protocol — NO JavaFX, node, or wallet
+    // deps. The app implements the Cip30Wallet / Cip30Approvals SPIs and owns the
+    // server lifecycle.
+
+    // Localhost WebSocket server.
+    api libs.java.websocket
+
+    // CIP-30 wire encoding: addresses, Value, and TransactionUnspentOutput CBOR.
+    implementation libs.cardano.client.transaction.spec
+    implementation libs.cardano.client.core.api
+    implementation libs.cardano.client.address
+    implementation libs.cardano.client.common
+
+    implementation libs.jackson.databind
+    implementation libs.slf4j.api
+
+    testImplementation libs.junit.jupiter.api
+    testRuntimeOnly libs.junit.jupiter.engine
+    testRuntimeOnly libs.junit.platform.launcher
+    testImplementation libs.assertj.core
+    // CCL's CIP-30 deserializer, used as the oracle in the UTxO encoding round-trip test.
+    testImplementation libs.cardano.client.cip30
+}
+
+test {
+    useJUnitPlatform()
+}

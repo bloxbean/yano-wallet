@@ -1,0 +1,47 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Yano CIP-30 — signTx test</title>
+  <style>
+    body { font: 14px/1.55 system-ui, -apple-system, sans-serif; background: #12162c; color: #eef1ff;
+      min-height: 100vh; margin: 0; display: flex; align-items: center; justify-content: center; }
+    .container { max-width: 520px; width: 100%; padding: 24px; }
+    h1 { font-size: 20px; margin: 0 0 4px; }
+    .subtitle { color: #9aa4d6; font-size: 13px; margin-bottom: 18px; }
+    .card { background: #1c2140; border: 1px solid #2c3566; border-radius: 12px; padding: 18px; }
+    button { padding: 9px 14px; margin: 4px 0; border: 0; border-radius: 8px; background: #6ea8ff;
+      color: #10142c; font-weight: 600; font-size: 14px; cursor: pointer; display: block; width: 100%; }
+    button:disabled { opacity: .5; cursor: default; }
+    .info { color: #46d18a; font-size: 12px; word-break: break-all; margin: 10px 0; }
+    #status { margin-top: 14px; padding: 12px; border-radius: 8px; font-size: 13px; word-break: break-all; display: none; }
+    #status.info { background: #172554; color: #93c5fd; } #status.success { background: #052e16; color: #86efac; }
+    #status.error { background: #450a0a; color: #fca5a5; }
+    code { background: rgba(255,255,255,.1); padding: 1px 5px; border-radius: 4px; }
+    a { color: #93c5fd; }
+  </style>
+</head>
+<body>
+  <div class="container">
+    <h1>Yano signTx test</h1>
+    <p class="subtitle">Builds a real "send ₳2 to yourself" preprod transaction with MeshJS,
+      then signs + submits it through Yano (CIP-30 M2). Wallet must be on preprod with some tADA.</p>
+    <div class="card">
+      <button id="connect">Connect Yano</button>
+      <div id="info" class="info"></div>
+      <button id="send" disabled>Send ₳2 to myself</button>
+    </div>
+    <div class="card">
+      <p class="subtitle" style="margin-bottom:10px">Plutus script test (M4): lock ₳3 at an
+        always-succeeds script, then unlock it — the unlock is a real script transaction
+        (collateral, redeemer, script-data-hash). Protocol params come from Koios preprod.</p>
+      <button id="lock" disabled>1 · Lock ₳3 at script</button>
+      <div id="lockInfo" class="info"></div>
+      <button id="unlock" disabled>2 · Unlock from script (Plutus)</button>
+    </div>
+    <div id="status"></div>
+  </div>
+  <script type="module" src="/src/main.ts"></script>
+</body>
+</html>

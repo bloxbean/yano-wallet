@@ -1,0 +1,34 @@
+plugins {
+    id 'java-library'
+}
+
+java {
+    sourceCompatibility = '25'
+    targetCompatibility = '25'
+}
+
+dependencies {
+    api libs.cardano.client.hd.wallet
+    api libs.cardano.client.quicktx
+    api libs.cardano.client.cip30
+    api libs.cardano.client.cip20
+    api libs.cardano.client.core
+    api libs.cardano.client.core.api
+    api libs.cardano.client.address
+    api libs.cardano.client.common
+    api libs.cardano.client.crypto
+    api libs.cardano.client.transaction.spec
+
+    implementation libs.jackson.databind
+    implementation libs.bouncycastle.bcprov
+    implementation libs.slf4j.api
+
+    testImplementation libs.junit.jupiter.api
+    testRuntimeOnly libs.junit.jupiter.engine
+    testRuntimeOnly libs.junit.platform.launcher
+    testImplementation libs.assertj.core
+}
+
+test {
+    useJUnitPlatform()
+}

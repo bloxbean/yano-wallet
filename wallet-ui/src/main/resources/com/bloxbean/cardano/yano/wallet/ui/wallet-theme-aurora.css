@@ -1,0 +1,12 @@
+/* Yano Wallet — Aurora theme.
+   Override layer on the dark base: keeps the graphite surfaces from wallet.css
+   but swaps to a violet → magenta accent. The tint tokens (-net-*, -sel-*) are
+   defined in wallet.css as derive(-accent…), so they re-derive automatically. */
+.root {
+    -accent: #7c5cff;
+    -accent-2: #d16bff;
+    -hero-from: #241a3f;
+    -hero-to: #15112a;
+    -hero-border: #3a2b63;
+    -bg-glow: #241a3f;
+}
