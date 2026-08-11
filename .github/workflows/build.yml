@@ -1,0 +1,59 @@
+name: build
+
+# Everyday CI: compile every module and run the test suite on each push to main
+# and every pull request.
+#
+# Deliberately does NOT package. Building an installer means jpackage on four
+# runners plus fetching the pinned ~256 MB Yano node distribution, which is
+# release work (release.yml, on tag v*). Only the packaging tasks depend on
+# :fetchYanoNode, so an ordinary `build` never downloads the node — this stays a
+# fast signal on whether the code compiles and the tests pass.
+#
+# One runner is enough: nothing here touches the OS-specific JavaFX or
+# hardware-wallet natives at test time, and release.yml covers all four
+# platforms before anything ships.
+
+on:
+  push:
+    branches: ['main']
+  pull_request:
+  workflow_dispatch: {}
+
+permissions:
+  contents: read
+
+concurrency:
+  # A newer push supersedes an in-flight run on the same ref; a superseded
+  # result is noise, not signal.
+  group: build-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up OpenJDK 25 (Temurin)
+        uses: actions/setup-java@v4
+        with:
+          distribution: 'temurin'
+          java-version: '25'
+          cache: 'gradle'
+
+      - name: Grant execute permission for gradlew
+        run: chmod +x gradlew
+
+      - name: Build and test
+        run: ./gradlew build --no-daemon
+
+      # Reports are what make a red build diagnosable without re-running it
+      # locally, so keep them even when (especially when) the build failed.
+      - name: Upload test reports
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: test-reports
+          path: '**/build/reports/tests/test'
+          if-no-files-found: ignore
+          retention-days: 7

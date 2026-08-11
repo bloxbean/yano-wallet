@@ -1,12 +1,15 @@
-name: release (Yano Wallet)
+name: release
 
 # Builds the Yano Wallet desktop app per OS and publishes two artifacts each:
 #   * a native installer with a bundled open-source JRE — no Java needed
 #     (dmg / msi / deb)
 #   * a portable "bring your own Java 25+" zip (jars + launch scripts)
 #
-#   preview : Actions > Run workflow            -> uploads as workflow ARTIFACTS
-#   release : push a tag  wallet-v<version>      -> uploads to the RELEASE for that tag
+#   preview : Actions > Run workflow      -> uploads as workflow ARTIFACTS
+#   release : push a tag  v<version>      -> uploads to the RELEASE for that tag
+#
+# Only tagged pushes land on a Release; everyday pushes and pull requests are
+# built by build.yml, which skips packaging entirely so it stays fast.
 #
 # jpackage cannot cross-compile, so one runner per OS. The JDK is an OpenJDK
 # build (Temurin, GPLv2+CE) — never Oracle JDK — so the bundled runtime is freely
@@ -15,7 +18,7 @@ name: release (Yano Wallet)
 
 on:
   push:
-    tags: ['wallet-v*']
+    tags: ['v*']
   workflow_dispatch: {}
 
 permissions:
@@ -49,8 +52,10 @@ jobs:
         id: ver
         shell: bash
         run: |
+          # Tag v0.1.0 -> version 0.1.0. The prefix must be stripped here or it
+          # ends up in every artifact filename ("yano-wallet-macos_arm64_v0.1.0").
           if [ "${GITHUB_REF_TYPE}" = "tag" ]; then
-            V="${GITHUB_REF_NAME#wallet-v}"
+            V="${GITHUB_REF_NAME#v}"
           else
             V=$(grep -m1 '^walletVersion' gradle.properties | cut -d= -f2 | tr -d ' ')
           fi
