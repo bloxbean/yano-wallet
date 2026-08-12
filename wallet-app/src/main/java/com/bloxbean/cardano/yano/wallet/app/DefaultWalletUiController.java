@@ -705,8 +705,8 @@ public class DefaultWalletUiController implements WalletUiController {
             // wins over a stale local pending record of the same hash.
             List<TxItem> nodeItems = new ArrayList<>();
             Set<String> nodeHashes = new LinkedHashSet<>();
-            for (HistoryPort.TxRef tx : ports().accountTransactions(
-                    profile.stakeAddress(), page, count, true)) {
+            for (HistoryPort.TxRef tx : ports().walletTransactions(
+                    profile.stakeAddress(), profile.baseAddress(), page, count, true)) {
                 nodeHashes.add(tx.txHash());
                 nodeItems.add(new TxItem(tx.txHash(), tx.blockHeight(),
                         TIME_FORMAT.format(Instant.ofEpochSecond(tx.blockTime())),

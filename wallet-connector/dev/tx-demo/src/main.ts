@@ -1,6 +1,5 @@
 import {
   BrowserWallet,
-  KoiosProvider,
   Transaction,
   resolveDataHash,
   resolvePaymentKeyHash,
@@ -8,11 +7,17 @@ import {
 } from "@meshsdk/core";
 import type { PlutusScript, UTxO } from "@meshsdk/core";
 import { DEFAULT_PROTOCOL_PARAMETERS } from "@meshsdk/common";
+import { NETWORKS, selectNetwork, selectedNetwork } from "./networks";
+import type { NetworkId } from "./networks";
 
 // Self-contained signTx + submitTx test (ADR-035, CIP30-M2): connect Yano, build
-// a "send ₳2 to yourself" preprod transaction with MeshJS (the wallet supplies
-// the inputs; protocol params are the standard defaults, so no chain provider /
+// a "send ₳2 to yourself" transaction with MeshJS (the wallet supplies the
+// inputs; protocol params are the standard defaults, so no chain provider /
 // API key is needed for a simple send), then sign + submit through Yano.
+//
+// Runs against preprod or a local Yaci DevKit devnet (ADR-038) — pick with the
+// selector. Only the chain-data source differs; every CIP-30 call below is
+// identical, which is the point: the same dApp code drives both.
 
 const connectBtn = document.getElementById("connect") as HTMLButtonElement;
 const sendBtn = document.getElementById("send") as HTMLButtonElement;
@@ -21,6 +26,8 @@ const unlockBtn = document.getElementById("unlock") as HTMLButtonElement;
 const info = document.getElementById("info") as HTMLDivElement;
 const lockInfo = document.getElementById("lockInfo") as HTMLDivElement;
 const statusEl = document.getElementById("status") as HTMLDivElement;
+const networkPicker = document.getElementById("network") as HTMLSelectElement;
+const networkHint = document.getElementById("networkHint") as HTMLDivElement;
 
 let wallet: BrowserWallet | null = null;
 
@@ -30,16 +37,13 @@ let wallet: BrowserWallet | null = null;
 const ALWAYS_SUCCEEDS: PlutusScript = { code: "4e4d01000033222220051200120011", version: "V1" };
 const SCRIPT_ADDRESS = resolvePlutusScriptAddress(ALWAYS_SUCCEEDS, 0); // testnet
 const LOCK_AMOUNT = "3000000";
-const LOCK_STORE = "yano-script-lock";
-// Koios preprod, routed through the Vite dev-server proxy (see vite.config.ts):
-// browser-direct Koios calls get blocked (CORS/Cloudflare), so the dev server
-// forwards /koios/* server-to-server instead.
-const KOIOS_BASE = "/koios";
-const koios = () => new KoiosProvider(KOIOS_BASE);
+// Keyed by network: a UTxO locked on preprod does not exist on a devnet, so
+// unlocking must never reach across chains for it.
+const lockStore = () => "yano-script-lock:" + selectedNetwork().id;
 
 function savedLock(): { txHash: string; datumValue: string } | null {
   try {
-    const raw = localStorage.getItem(LOCK_STORE);
+    const raw = localStorage.getItem(lockStore());
     return raw ? JSON.parse(raw) : null;
   } catch (_) {
     return null;
@@ -58,6 +62,31 @@ function show(html: string, kind: "info" | "success" | "error") {
   statusEl.className = kind;
   statusEl.style.display = "block";
 }
+
+/** A "view this tx" line, or nothing where the network has no explorer. */
+function explorerLine(hash: string): string {
+  const url = selectedNetwork().explorerTx(hash);
+  return url ? `<br><a href="${url}" target="_blank">View on cardanoscan</a>` : "";
+}
+
+function refreshNetworkUi() {
+  const network = selectedNetwork();
+  networkPicker.value = network.id;
+  networkHint.textContent = "Needs: " + network.hint;
+  refreshLockUi();
+}
+
+networkPicker.addEventListener("change", () => {
+  selectNetwork(networkPicker.value as NetworkId);
+  // The connection is per-network in practice (different chain, different
+  // UTxOs), and both testnets report CIP-30 networkId 0 so the demo cannot
+  // detect a mismatch for you — reconnect deliberately.
+  wallet = null;
+  sendBtn.disabled = true;
+  info.textContent = "";
+  statusEl.style.display = "none";
+  refreshNetworkUi();
+});
 
 function describe(e: any): string {
   const s = e && (e.message || e.info) ? e.message || e.info : String(e);
@@ -103,8 +132,7 @@ sendBtn.addEventListener("click", async () => {
     const hash = await wallet.submitTx(signed);
 
     show(
-      `Submitted ✓ <code>${hash}</code><br>` +
-        `<a href="https://preprod.cardanoscan.io/transaction/${hash}" target="_blank">View on cardanoscan</a>`,
+      `Submitted ✓ <code>${hash}</code>` + explorerLine(hash),
       "success"
     );
   } catch (e) {
@@ -130,11 +158,11 @@ lockBtn.addEventListener("click", async () => {
     show("Submitting…", "info");
     const hash = await wallet.submitTx(signed);
 
-    localStorage.setItem(LOCK_STORE, JSON.stringify({ txHash: hash, datumValue }));
+    localStorage.setItem(lockStore(), JSON.stringify({ txHash: hash, datumValue }));
     refreshLockUi();
     show(
-      `Locked ✓ <code>${hash}</code><br>Wait for confirmation (~1 block), then unlock.<br>` +
-        `<a href="https://preprod.cardanoscan.io/transaction/${hash}" target="_blank">View on cardanoscan</a>`,
+      `Locked ✓ <code>${hash}</code><br>Wait for confirmation (~1 block), then unlock.` +
+        explorerLine(hash),
       "success"
     );
   } catch (e) {
@@ -150,7 +178,8 @@ unlockBtn.addEventListener("click", async () => {
   if (!wallet || !lock) return;
   unlockBtn.disabled = true;
   try {
-    const provider = koios();
+    const network = selectedNetwork();
+    const provider = network.provider();
     const scriptUtxo: UTxO = {
       input: { txHash: lock.txHash, outputIndex: 0 },
       output: {
@@ -159,23 +188,17 @@ unlockBtn.addEventListener("click", async () => {
         dataHash: resolveDataHash(lock.datumValue),
       },
     };
-    show("Fetching current preprod cost models…", "info");
-    // The script-data-hash covers the cost-model "language views". Mesh's baked-in
-    // default cost models are stale vs live preprod (InvalidScriptDataHash at the
-    // node), and its Protocol type can't carry cost models — so inject the current
-    // ones ([V1, V2, V3]) straight from Koios into the tx builder.
-    const epochParams = await (
-      await fetch(KOIOS_BASE + "/epoch_params?order=epoch_no.desc&limit=1")
-    ).json();
-    const rawModels = epochParams[0].cost_models;
-    const costModels = typeof rawModels === "string" ? JSON.parse(rawModels) : rawModels;
+    show(`Fetching current cost models from ${network.label}…`, "info");
+    // The script-data-hash covers the cost-model "language views", so the models
+    // must be the CHAIN's current ones (see networks.ts).
+    const costModels = await network.costModels();
 
     show("Building unlock transaction (script input + redeemer + collateral)…", "info");
     // No evaluator: Koios's Ogmios evaluate passthrough rejects anonymous browser
     // POSTs (ERR_NETWORK). Mesh's default redeemer budget (7M mem / 3B steps) is
     // plenty for always-succeeds.
     const tx = new Transaction({ initiator: wallet, fetcher: provider });
-    tx.txBuilder.setCostModels([costModels.PlutusV1, costModels.PlutusV2, costModels.PlutusV3]);
+    tx.txBuilder.setCostModels(costModels);
     tx.redeemValue({ value: scriptUtxo, script: ALWAYS_SUCCEEDS, datum: lock.datumValue });
     tx.sendValue(await wallet.getChangeAddress(), scriptUtxo);
     const unsigned = await tx.build();
@@ -185,11 +208,11 @@ unlockBtn.addEventListener("click", async () => {
     show("Submitting…", "info");
     const hash = await wallet.submitTx(signed);
 
-    localStorage.removeItem(LOCK_STORE);
+    localStorage.removeItem(lockStore());
     refreshLockUi();
     show(
-      `Unlocked ✓ — a Plutus script transaction signed on your Ledger.<br><code>${hash}</code><br>` +
-        `<a href="https://preprod.cardanoscan.io/transaction/${hash}" target="_blank">View on cardanoscan</a>`,
+      `Unlocked ✓ — a Plutus script transaction signed on your Ledger.<br><code>${hash}</code>` +
+        explorerLine(hash),
       "success"
     );
   } catch (e) {
@@ -199,3 +222,5 @@ unlockBtn.addEventListener("click", async () => {
 });
 
 refreshLockUi();
+
+refreshNetworkUi();

@@ -36,12 +36,30 @@ public class YanoNodeClient {
     private final HttpClient httpClient;
     private final ObjectMapper objectMapper;
     private final Duration requestTimeout;
+    /**
+     * True when the backend is Blockfrost-shaped (yaci-store / Yaci DevKit)
+     * rather than a Yano node (ADR-038). It changes which paths exist, not just
+     * which are faster: yaci-store has no /governance/dreps/{id} and no
+     * /accounts/{stake}/transactions, so those must be routed elsewhere.
+     */
+    private final boolean blockfrostFlavor;
 
     public YanoNodeClient(String baseUrl) {
         this(baseUrl, HttpClient.newBuilder().connectTimeout(DEFAULT_TIMEOUT).build(), DEFAULT_TIMEOUT);
     }
 
+    public YanoNodeClient(String baseUrl, boolean blockfrostFlavor) {
+        this(baseUrl, HttpClient.newBuilder().connectTimeout(DEFAULT_TIMEOUT).build(),
+                DEFAULT_TIMEOUT, blockfrostFlavor);
+    }
+
     public YanoNodeClient(String baseUrl, HttpClient httpClient, Duration requestTimeout) {
+        this(baseUrl, httpClient, requestTimeout, false);
+    }
+
+    public YanoNodeClient(String baseUrl, HttpClient httpClient, Duration requestTimeout,
+                          boolean blockfrostFlavor) {
+        this.blockfrostFlavor = blockfrostFlavor;
         this.baseUri = URI.create(normalizeBaseUrl(baseUrl));
         this.httpClient = Objects.requireNonNull(httpClient, "httpClient is required");
         this.objectMapper = new ObjectMapper();
@@ -50,6 +68,11 @@ public class YanoNodeClient {
 
     public String baseUrl() {
         return baseUri.toString();
+    }
+
+    /** True when this backend is yaci-store rather than a Yano node (ADR-038). */
+    public boolean isBlockfrostFlavor() {
+        return blockfrostFlavor;
     }
 
     public NodeStatus getStatus() {
@@ -286,22 +309,46 @@ public class YanoNodeClient {
      * error so callers never mistake an outage for "not registered".
      */
     public DRepInfo getDRepInfo(String drepId) {
+        // The two backends disagree on both the path and the payload (ADR-038 §4).
+        // Yano serves /governance/dreps/{id} with explicit active/retired/expired
+        // flags; yaci-store serves /governance-state/dreps/{id} with a single
+        // `status` string and no registration epoch — it has no /governance/dreps
+        // /{id} route at all, so asking it there 404s and the wallet would report
+        // a registered DRep as "not registered".
+        if (blockfrostFlavor) {
+            JsonNode root = getJsonOrNull("governance-state/dreps/" + drepId);
+            return root == null ? null : toDRepInfoFromGovernanceState(root);
+        }
         JsonNode root = getJsonOrNull("governance/dreps/" + drepId);
         if (root == null) {
             return null;
-        }
-        java.math.BigInteger deposit;
-        try {
-            deposit = new java.math.BigInteger(root.path("deposit").asText("0"));
-        } catch (NumberFormatException e) {
-            deposit = java.math.BigInteger.ZERO;
         }
         return new DRepInfo(
                 root.path("active").asBoolean(false),
                 root.path("retired").asBoolean(false),
                 root.path("expired").asBoolean(false),
                 root.path("registered_epoch").asInt(0),
-                deposit);
+                depositOf(root));
+    }
+
+    /**
+     * yaci-store's {@code DRepDetailsDto}: {@code status} in place of the flag
+     * trio, and no registration epoch — {@link DRepInfo#registeredEpoch()} is 0,
+     * which callers must read as "unknown" rather than "epoch zero".
+     */
+    private static DRepInfo toDRepInfoFromGovernanceState(JsonNode root) {
+        String status = root.path("status").asText("").trim().toUpperCase(Locale.ROOT);
+        boolean retired = status.contains("RETIRED") || status.contains("UNREGISTERED");
+        boolean expired = status.contains("EXPIRED") || status.contains("INACTIVE");
+        return new DRepInfo(!retired && !expired, retired, expired, 0, depositOf(root));
+    }
+
+    private static java.math.BigInteger depositOf(JsonNode root) {
+        try {
+            return new java.math.BigInteger(root.path("deposit").asText("0"));
+        } catch (NumberFormatException e) {
+            return java.math.BigInteger.ZERO;
+        }
     }
 
     /** Reward history from {@code GET /accounts/{stake}/rewards}. */

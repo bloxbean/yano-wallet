@@ -2,7 +2,10 @@
 
 ## Status
 
-Proposed (plan only — not yet implemented)
+Implemented. BF-M1 and BF-M2 are built; BF-M3 (devkit end-to-end) is under way —
+send, lock and a Plutus unlock have been driven against a live DevKit through the
+CIP-30 connector. See *What the live DevKit actually serves* for the two routes
+this ADR's path map got wrong.
 
 ## Date
 
@@ -205,6 +208,36 @@ Until then the fingerprint's limits are:
 - DevKit's epoch-shifting / time-travel features (devkit ADR-0008) move genesis
   intentionally — such a chain fingerprints as "devnet", which is correct, but
   means the check can never be tightened into an equality assertion for devnets.
+
+## What the live DevKit actually serves
+
+Probed 2026-08-12 against a running Yaci DevKit via its OpenAPI document
+(`/v3/api-docs`, 142 routes). Two routes this ADR assumed are **absent**, and
+both failed *silently* — nothing errored, the wallet simply said something
+untrue:
+
+| Wallet needed | yaci-store | Now used |
+|---|---|---|
+| `/accounts/{stake}/transactions` | **absent** | `/addresses/{address}/transactions` |
+| `/governance/dreps/{drepId}` | **absent** | `/governance-state/dreps/{drepId}` |
+
+The history route 404s, which rendered an empty list as though the wallet had
+never transacted. The DRep route 404s, which the wallet reads as "not
+registered" — so it would offer to register a DRep that already exists.
+
+The DRep payload also differs in shape, not only in path: yaci-store's
+`DRepDetailsDto` carries a single `status` string and a `registration_slot`,
+where a Yano node carries `active`/`retired`/`expired` and `registered_epoch`.
+`registeredEpoch` is therefore 0 on this flavor and must be read as *unknown*.
+
+Because the flavor decides which routes **exist**, it is fixed at connect time
+from the user's network choice rather than probed per call — `YanoNodeClient`
+carries it, and `HistoryPort.walletTransactions` takes both the stake and
+payment address so each backend can be asked the question it can answer.
+
+One consequence worth stating: on this flavor, history is per-address rather
+than per-account. For a wallet that uses one payment address per account they
+are the same set; for a future multi-address wallet they would not be.
 
 ## Milestones
 

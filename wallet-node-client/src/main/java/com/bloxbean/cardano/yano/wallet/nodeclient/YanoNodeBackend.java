@@ -45,7 +45,10 @@ public class YanoNodeBackend {
     public static YanoNodeBackend connect(WalletNetwork network, String baseUrl) {
         Objects.requireNonNull(network, "network is required");
         String normalized = YanoNodeClient.normalizeBaseUrl(baseUrl);
-        YanoNodeClient nodeClient = new YanoNodeClient(normalized);
+        // The flavor decides which paths exist, not merely which are preferred
+        // (ADR-038 §4) — so it is fixed at connect time from the user's network
+        // choice, which is the only thing that can identify a yaci-store.
+        YanoNodeClient nodeClient = new YanoNodeClient(normalized, network.blockfrostFlavor());
         // Yano ignores the Blockfrost project_id header; pass a placeholder.
         BackendService backendService = new BFBackendService(normalized, "yano");
         return new YanoNodeBackend(network, nodeClient, backendService);

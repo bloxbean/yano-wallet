@@ -19,15 +19,24 @@
     #status.info { background: #172554; color: #93c5fd; } #status.success { background: #052e16; color: #86efac; }
     #status.error { background: #450a0a; color: #fca5a5; }
     code { background: rgba(255,255,255,.1); padding: 1px 5px; border-radius: 4px; }
+    select { width: 100%; padding: 8px; margin-bottom: 4px; border-radius: 8px; border: 1px solid #2c3566;
+      background: #12162c; color: #eef1ff; font: inherit; }
     a { color: #93c5fd; }
   </style>
 </head>
 <body>
   <div class="container">
     <h1>Yano signTx test</h1>
-    <p class="subtitle">Builds a real "send ₳2 to yourself" preprod transaction with MeshJS,
-      then signs + submits it through Yano (CIP-30 M2). Wallet must be on preprod with some tADA.</p>
+    <p class="subtitle">Builds a real "send ₳2 to yourself" transaction with MeshJS, then signs
+      + submits it through Yano (CIP-30 M2). The same dApp code runs against preprod or a local
+      Yaci DevKit devnet — only where chain data comes from changes.</p>
     <div class="card">
+      <label class="subtitle" for="network" style="display:block;margin-bottom:6px">Network</label>
+      <select id="network">
+        <option value="preprod">Preprod (Koios)</option>
+        <option value="yaci-devkit">Yaci DevKit (local devnet)</option>
+      </select>
+      <div id="networkHint" class="info"></div>
       <button id="connect">Connect Yano</button>
       <div id="info" class="info"></div>
       <button id="send" disabled>Send ₳2 to myself</button>
@@ -35,7 +44,7 @@
     <div class="card">
       <p class="subtitle" style="margin-bottom:10px">Plutus script test (M4): lock ₳3 at an
         always-succeeds script, then unlock it — the unlock is a real script transaction
-        (collateral, redeemer, script-data-hash). Protocol params come from Koios preprod.</p>
+        (collateral, redeemer, script-data-hash). Cost models come from the selected network.</p>
       <button id="lock" disabled>1 · Lock ₳3 at script</button>
       <div id="lockInfo" class="info"></div>
       <button id="unlock" disabled>2 · Unlock from script (Plutus)</button>

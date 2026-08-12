@@ -9,7 +9,16 @@ import java.util.List;
  * throws {@link HistoryUnavailableException} and the UI degrades gracefully.
  */
 public interface HistoryPort {
-    List<TxRef> accountTransactions(String stakeAddress, int page, int count, boolean newestFirst);
+    /**
+     * This wallet's transaction history.
+     *
+     * <p>Both addresses are supplied because backends key history differently and
+     * only one of them exists on each: a Yano node serves it per stake account
+     * ({@code /accounts/{stake}/transactions}), while yaci-store has no such route
+     * and serves it per address ({@code /addresses/{address}/transactions}).
+     */
+    List<TxRef> walletTransactions(String stakeAddress, String paymentAddress,
+                                   int page, int count, boolean newestFirst);
 
     List<RewardView> rewards(String stakeAddress, int page, int count);
 

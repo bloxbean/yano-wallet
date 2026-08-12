@@ -15,6 +15,14 @@ export default defineConfig({
         changeOrigin: true,
         rewrite: (path) => path.replace(/^\/koios/, ""),
       },
+      // Yaci DevKit's yaci-store (ADR-038). Proxied for the same reason as
+      // Koios: a browser fetch from :3000 to :8080 is cross-origin. Override the
+      // target with YACI_STORE_URL when devkit runs on a non-default port.
+      "/yaci": {
+        target: process.env.YACI_STORE_URL || "http://localhost:8080/api/v1",
+        changeOrigin: true,
+        rewrite: (path) => path.replace(/^\/yaci/, ""),
+      },
     },
   },
   resolve: {

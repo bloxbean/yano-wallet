@@ -54,9 +54,17 @@ public class YanoNodePorts implements NodeStatusPort, HistoryPort, TxSimulationP
     }
 
     @Override
-    public List<TxRef> accountTransactions(String stakeAddress, int page, int count, boolean newestFirst) {
+    public List<TxRef> walletTransactions(String stakeAddress, String paymentAddress,
+                                          int page, int count, boolean newestFirst) {
         try {
-            return client.getAccountTransactions(stakeAddress, page, count, newestFirst ? "desc" : "asc")
+            String order = newestFirst ? "desc" : "asc";
+            // yaci-store has no /accounts/{stake}/transactions route at all
+            // (verified against a live DevKit), so asking it there 404s and the
+            // history screen shows nothing. Per-address is its equivalent.
+            List<YanoNodeClient.AddressTx> txs = client.isBlockfrostFlavor()
+                    ? client.getAddressTransactions(paymentAddress, page, count, order)
+                    : client.getAccountTransactions(stakeAddress, page, count, order);
+            return txs
                     .stream()
                     .map(tx -> new TxRef(tx.txHash(), tx.blockHeight(), tx.blockTime(), tx.slot()))
                     .toList();
