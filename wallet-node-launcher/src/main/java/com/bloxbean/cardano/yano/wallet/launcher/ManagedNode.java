@@ -1,5 +1,6 @@
 package com.bloxbean.cardano.yano.wallet.launcher;
 
+import com.bloxbean.cardano.yano.wallet.core.config.UpstreamRelay;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -283,12 +284,14 @@ public final class ManagedNode implements AutoCloseable {
             addSysProp(command, "quarkus.http.port", String.valueOf(spec.httpPort()));
             addSysProp(command, "yano.server.port", String.valueOf(spec.n2nPort()));
             addSysProp(command, "yano.storage.path", spec.chainstateDir().toAbsolutePath().toString());
+            addUpstreamRelays(command);
         } else {
             command.add(spec.javaExecutable());
             addSysProp(command, "quarkus.profile", spec.quarkusProfile());
             addSysProp(command, "quarkus.http.port", String.valueOf(spec.httpPort()));
             addSysProp(command, "yano.server.port", String.valueOf(spec.n2nPort()));
             addSysProp(command, "yano.storage.path", spec.chainstateDir().toAbsolutePath().toString());
+            addUpstreamRelays(command);
             command.add("-jar");
             command.add(spec.nodeJar().toString());
         }
@@ -301,6 +304,49 @@ public final class ManagedNode implements AutoCloseable {
         log.info("Starting managed node: {} (workingDir={}, http={}, chainstate={})",
                 spec.nodeJar().getFileName(), spec.workingDir(), spec.httpPort(), spec.chainstateDir());
         return builder.start();
+    }
+
+    /**
+     * Configures the node's upstream relays (E18), so a relay that stops
+     * delivering costs a failover rather than the whole sync.
+     *
+     * <p>{@code trusted-failover} rather than {@code static-multi}: this is about
+     * staying connected, not about trusting several peers against each other, and
+     * the quorum machinery is a cost with no benefit here. Bulk download stays on
+     * one peer ({@code single-trusted}) — this buys resilience, not throughput.
+     *
+     * <p>Discovery is left alone deliberately. Yano can find relays from the ledger
+     * and from a peer snapshot, which is the only real answer to hardcoded hosts
+     * going stale, but it also means a desktop wallet dialling many peers. That is
+     * a behaviour change that deserves its own opt-in and its own testing.
+     *
+     * <p>Emits nothing when the network has no relays (the two devnets), leaving
+     * the node's own profile to decide — a devnet's upstream is whatever the user
+     * is running locally, and we have no business guessing at it.
+     */
+    // Package-private so the exact property names can be pinned by a test. They
+    // are a contract with the node's config keys, spelled in a string, and a typo
+    // in one would be silently ignored by MicroProfile Config — the node would
+    // start happily on a single upstream and the failover would simply not exist.
+    void addUpstreamRelays(List<String> command) {
+        List<UpstreamRelay> relays = spec.relays();
+        if (relays.isEmpty()) {
+            return;
+        }
+        addSysProp(command, "yano.upstream.mode", "trusted-failover");
+        addSysProp(command, "yano.upstream.sync.bulk-source", "single-trusted");
+        for (int i = 0; i < relays.size(); i++) {
+            UpstreamRelay relay = relays.get(i);
+            String prefix = "yano.upstream.peers[" + i + "].";
+            addSysProp(command, prefix + "id", "relay-" + i);
+            addSysProp(command, prefix + "host", relay.host());
+            addSysProp(command, prefix + "port", String.valueOf(relay.port()));
+            // Ascending priority = declaration order, so a user's own relay is
+            // tried before the shipped defaults appended after it.
+            addSysProp(command, prefix + "priority", String.valueOf(i));
+            addSysProp(command, prefix + "trust", "trusted");
+        }
+        log.info("Managed node upstream relays ({}): {}", spec.network().id(), relays);
     }
 
     private void prepareChainstate() throws IOException {

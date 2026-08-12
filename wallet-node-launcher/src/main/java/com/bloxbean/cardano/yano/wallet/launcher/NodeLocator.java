@@ -27,7 +27,8 @@ public final class NodeLocator {
     public static Optional<NodeLaunchSpec> autoDetectDevJar(WalletNetwork network, Path chainstateDir,
                                                             Path logFile, int httpPort, int n2nPort) {
         return findNodeJar().map(jar -> new NodeLaunchSpec(network, jar, false, workingDirFor(jar),
-                httpPort, n2nPort, chainstateDir, logFile, resolveJavaExecutable()));
+                httpPort, n2nPort, chainstateDir, logFile, resolveJavaExecutable(),
+                network.defaultRelays()));
     }
 
     /**

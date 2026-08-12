@@ -70,6 +70,42 @@ public enum WalletNetwork {
     }
 
     /**
+     * Relays a managed node syncs from, best first. More than one per public
+     * network on purpose — see {@link UpstreamRelay} for why a single upstream is
+     * a stall waiting to happen.
+     *
+     * <p>Each pair resolves to independent hosts, which is the point: two names
+     * for one machine would look like redundancy and provide none. All six were
+     * confirmed to resolve and accept TCP on 2026-08-13, and they are official
+     * IOG / Cardano Foundation infrastructure rather than third-party pool relays,
+     * which makes them likelier to outlive this release.
+     *
+     * <p>Empty for the two devnets: a Yano devnet syncs from whatever local node
+     * the user runs (its own Quarkus profile decides), and a Yaci DevKit has no
+     * managed node at all. Hardcoded public relays would be wrong for both.
+     *
+     * <p>These will rot eventually — no hostname shipped in a desktop app lives
+     * forever. That is what the per-network override in settings is for, and why
+     * node readiness is deliberately "the REST API answers" rather than "the chain
+     * is advancing": a user whose relays have all died can still unlock, reach
+     * settings, and point the wallet somewhere that works.
+     */
+    public java.util.List<UpstreamRelay> defaultRelays() {
+        return switch (this) {
+            case MAINNET -> java.util.List.of(
+                    new UpstreamRelay("backbone.cardano.iog.io", 3001),
+                    new UpstreamRelay("backbone.mainnet.cardanofoundation.org", 3001));
+            case PREPROD -> java.util.List.of(
+                    new UpstreamRelay("preprod1-node.play.dev.cardano.org", 3001),
+                    new UpstreamRelay("preprod2-node.play.dev.cardano.org", 3001));
+            case PREVIEW -> java.util.List.of(
+                    new UpstreamRelay("preview1-node.play.dev.cardano.org", 3001),
+                    new UpstreamRelay("preview2-node.play.dev.cardano.org", 3001));
+            case DEVNET, YACI_DEVKIT -> java.util.List.of();
+        };
+    }
+
+    /**
      * A public Cardanoscan URL for a transaction, or {@code null} for networks
      * with no public explorer (devnet, Yaci DevKit). Lets the UI link a tx hash
      * to its details.

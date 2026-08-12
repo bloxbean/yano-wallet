@@ -4,6 +4,7 @@ import com.bloxbean.cardano.yano.wallet.core.config.WalletNetwork;
 import org.junit.jupiter.api.Test;
 
 import java.nio.file.Path;
+import java.util.List;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
@@ -12,7 +13,8 @@ class NodeLaunchSpecTest {
 
     private NodeLaunchSpec spec(WalletNetwork network, int httpPort) {
         return new NodeLaunchSpec(network, Path.of("app/build/yano.jar"), false,
-                Path.of("app"), httpPort, 13400, Path.of("cs"), Path.of("node.log"), "java");
+                Path.of("app"), httpPort, 13400, Path.of("cs"), Path.of("node.log"), "java",
+                List.of());
     }
 
     @Test
