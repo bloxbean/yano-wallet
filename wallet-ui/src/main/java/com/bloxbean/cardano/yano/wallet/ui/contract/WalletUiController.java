@@ -250,6 +250,47 @@ public interface WalletUiController {
     record ConnectorSettingsView(String transport, int wsPort, boolean weak) {
     }
 
+    /**
+     * The relays a network's managed node syncs from (E18), as {@code host:port}.
+     *
+     * <p>Editing these is not a tuning knob — it is the recovery path for two
+     * situations the shipped defaults cannot handle. Hostnames compiled into a
+     * released application eventually stop resolving, and a relay can stay alive
+     * while delivering almost nothing, which the node's own failover will not
+     * react to because it judges liveness rather than throughput.
+     *
+     * <p>Deliberately no "currently connected" field. The node reports its
+     * configured remote, not the peer actually in use after a failover, so
+     * labelling that as active would be a confident wrong answer of exactly the
+     * kind this wallet is supposed to avoid.
+     *
+     * @param configured what the node will be launched with, best first
+     * @param custom     the user's own entries; empty when they have not overridden
+     * @param shipped    the built-in relays, shown so it is clear what is overridden
+     * @param onlyCustom true when the built-in relays are excluded entirely
+     * @param editable   false for networks with no managed node (external backends,
+     *                   and devnets whose upstream is whatever the user runs)
+     */
+    record UpstreamRelaysView(List<String> configured, List<String> custom, List<String> shipped,
+                              boolean onlyCustom, boolean editable) {
+    }
+
+    /** The relay configuration for a network, for display and editing. */
+    UpstreamRelaysView upstreamRelays(String networkId);
+
+    /**
+     * Records relay overrides for a network. An empty list clears the override and
+     * restores the built-in relays — the same operation as "reset", so there is no
+     * way to save an override that contains nothing.
+     *
+     * <p>Takes effect when the node is next started, not immediately: the relays
+     * are launch arguments of a running child process.
+     *
+     * @return a message describing what was saved, for the UI to show
+     * @throws IllegalArgumentException if an entry is not a well-formed host:port
+     */
+    String saveUpstreamRelays(String networkId, List<String> relays, boolean onlyCustom);
+
     // --- active-session queries ---
     CompletableFuture<BalanceView> balance();
 

@@ -17,11 +17,15 @@ import javafx.scene.control.PasswordField;
 import javafx.scene.control.RadioButton;
 import javafx.scene.control.ScrollPane;
 import javafx.scene.control.TextArea;
+import javafx.scene.control.TitledPane;
 import javafx.scene.control.ToggleGroup;
 import javafx.scene.layout.HBox;
 import javafx.scene.control.TextField;
 import javafx.scene.layout.StackPane;
 import javafx.scene.layout.VBox;
+
+import java.util.Arrays;
+import java.util.List;
 
 /** Node connection, wallet info, and connected dApps. */
 public class SettingsScreen implements Shell.Screen {
@@ -113,14 +117,23 @@ public class SettingsScreen implements Shell.Screen {
         Button refreshLog = new Button("Refresh");
         refreshLog.getStyleClass().add("ghost-button");
         refreshLog.setOnAction(e -> loadNodeLog());
-        VBox advancedCard = Ui.card("Advanced",
+        // One Advanced card holding collapsed panes, rather than a growing stack of
+        // cards. Everything here is either diagnostic or a recovery path, so it
+        // should be findable without being in the way of ordinary use.
+        TitledPane filesPane = new TitledPane("Data directory and logs", new VBox(8,
                 Ui.muted("Data directory (wallets + node database)"),
                 dataDirLine,
                 Ui.muted("The wallet's own log is wallet.log in that directory, and the managed "
                         + "node's is <network>/node/node.log — attach both when reporting a problem."),
                 Ui.muted("Managed node log (last 100 lines)"),
                 refreshLog,
-                nodeLog);
+                nodeLog));
+        filesPane.setExpanded(false);
+
+        TitledPane relaysPane = new TitledPane("Upstream relays", buildRelayEditor());
+        relaysPane.setExpanded(false);
+
+        VBox advancedCard = Ui.card("Advanced", relaysPane, filesPane);
 
         VBox column = new VBox(16, title, appearanceCard(), nodeCard, walletCard, securityCard,
                 dappsCard, connectorCard, advancedCard);
@@ -130,6 +143,93 @@ public class SettingsScreen implements Shell.Screen {
         scroll.setFitToWidth(true);
         scroll.getStyleClass().add("screen-scroll");
         return scroll;
+    }
+
+    /**
+     * Upstream relay editor (E18). The wallet ships two relays per public network
+     * and the node fails over between them, so this is not needed in normal use.
+     * It exists for the two cases the defaults cannot cover: relay hostnames that
+     * stop resolving some years after a release, and a relay that stays alive
+     * while delivering almost nothing — the node's failover reacts to liveness,
+     * not throughput, so that one is a manual fix by design.
+     *
+     * <p>Shows the built-in relays alongside the box, so it is obvious what is
+     * being replaced rather than the user typing into a vacuum.
+     */
+    private Node buildRelayEditor() {
+        String networkId = controller.networkId();
+        var view = controller.upstreamRelays(networkId);
+
+        if (!view.editable()) {
+            return new VBox(8, Ui.muted("This network does not use a wallet-managed node, so there "
+                    + "are no relays to configure. A Yaci DevKit is reached over HTTP, and a Yano "
+                    + "devnet syncs from whatever node you run locally."));
+        }
+
+        Label current = Ui.muted("Currently syncing from: " + String.join(", ", view.configured()));
+        current.setWrapText(true);
+
+        TextArea editor = new TextArea(String.join("\n", view.custom()));
+        editor.setPromptText("one host:port per line, e.g. relay.example.com:3001");
+        editor.setPrefRowCount(3);
+        editor.getStyleClass().add("mono");
+
+        CheckBox onlyCustom = new CheckBox("Use only these relays (do not fall back to the built-in ones)");
+        onlyCustom.setSelected(view.onlyCustom());
+        onlyCustom.setWrapText(true);
+
+        Label status = new Label();
+        status.setWrapText(true);
+        status.getStyleClass().add("muted");
+
+        Button save = new Button("Save relays");
+        save.getStyleClass().add("primary-button");
+        Button reset = new Button("Use built-in relays");
+        reset.getStyleClass().add("ghost-button");
+
+        Runnable refresh = () -> {
+            var latest = controller.upstreamRelays(networkId);
+            editor.setText(String.join("\n", latest.custom()));
+            onlyCustom.setSelected(latest.onlyCustom());
+            current.setText("Currently syncing from: " + String.join(", ", latest.configured()));
+        };
+
+        save.setOnAction(e -> {
+            List<String> entries = Arrays.stream(editor.getText().split("\\R"))
+                    .map(String::strip)
+                    .filter(line -> !line.isEmpty())
+                    .toList();
+            try {
+                String message = controller.saveUpstreamRelays(networkId, entries, onlyCustom.isSelected());
+                refresh.run();
+                status.getStyleClass().setAll("muted");
+                status.setText(message);
+            } catch (RuntimeException ex) {
+                // Rejecting the whole list rather than saving the good lines: a
+                // partially-applied relay list is one the user never approved.
+                status.getStyleClass().setAll("approval-warning");
+                status.setText("Not saved — " + ex.getMessage());
+            }
+        });
+
+        reset.setOnAction(e -> {
+            String message = controller.saveUpstreamRelays(networkId, List.of(), false);
+            refresh.run();
+            status.getStyleClass().setAll("muted");
+            status.setText(message);
+        });
+
+        return new VBox(8,
+                current,
+                Ui.muted("Built-in: " + String.join(", ", view.shipped())),
+                Ui.muted("Leave this empty to use the built-in relays. Entries you add are tried "
+                        + "first, with the built-in ones behind them unless you tick the box below."),
+                editor,
+                onlyCustom,
+                Ui.row(8, save, reset),
+                Ui.muted("Takes effect the next time the node starts — relays are set when the "
+                        + "node process is launched."),
+                status);
     }
 
     /**

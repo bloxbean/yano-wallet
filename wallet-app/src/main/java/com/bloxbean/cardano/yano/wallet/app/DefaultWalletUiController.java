@@ -8,6 +8,7 @@ import com.bloxbean.cardano.client.transaction.spec.governance.DRep;
 import com.bloxbean.cardano.client.transaction.spec.governance.DRepType;
 import com.bloxbean.cardano.client.transaction.spec.governance.Vote;
 import com.bloxbean.cardano.client.util.HexUtil;
+import com.bloxbean.cardano.yano.wallet.core.config.UpstreamRelay;
 import com.bloxbean.cardano.yano.wallet.core.config.WalletNetwork;
 import com.bloxbean.cardano.yano.wallet.core.service.HistoryPort;
 import com.bloxbean.cardano.yano.wallet.core.service.NodeStatusPort;
@@ -683,6 +684,43 @@ public class DefaultWalletUiController implements WalletUiController {
         }
         var current = store.settings();
         return new ConnectorSettingsView(current.transport(), current.wsPort(), store.isWeakTransport());
+    }
+
+    @Override
+    public UpstreamRelaysView upstreamRelays(String networkId) {
+        WalletNetwork network = WalletNetwork.fromId(networkId);
+        RelaySettingsStore store = backendManager.relaySettings();
+        // Editable only where the wallet actually launches a node with these as
+        // arguments. A Yaci DevKit has no managed node, and a Yano devnet's
+        // upstream is whatever the user is running locally — offering a relay box
+        // for either would be a control that does nothing.
+        boolean editable = !network.blockfrostFlavor() && !network.defaultRelays().isEmpty();
+        return new UpstreamRelaysView(
+                store.relaysFor(network).stream().map(Object::toString).toList(),
+                store.customRelaysFor(network).stream().map(Object::toString).toList(),
+                network.defaultRelays().stream().map(Object::toString).toList(),
+                store.isOnlyCustom(network),
+                editable);
+    }
+
+    @Override
+    public String saveUpstreamRelays(String networkId, List<String> relays, boolean onlyCustom) {
+        WalletNetwork network = WalletNetwork.fromId(networkId);
+        // Parse every entry BEFORE saving any: a half-applied list would leave the
+        // node launching from something the user never approved.
+        List<UpstreamRelay> parsed = (relays == null ? List.<String>of() : relays).stream()
+                .filter(entry -> entry != null && !entry.isBlank())
+                .map(UpstreamRelay::parse)
+                .toList();
+        backendManager.relaySettings().save(network, parsed, onlyCustom);
+        if (parsed.isEmpty()) {
+            return "Using the built-in relays for " + network.displayName()
+                    + ". Restart the node for this to take effect.";
+        }
+        return "Saved " + parsed.size() + " relay" + (parsed.size() == 1 ? "" : "s")
+                + " for " + network.displayName()
+                + (onlyCustom ? " (built-in relays excluded)" : ", with the built-in relays as fallback")
+                + ". Restart the node for this to take effect.";
     }
 
     @Override
