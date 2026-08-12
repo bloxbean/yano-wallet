@@ -68,6 +68,9 @@ public class DefaultWalletUiController implements WalletUiController {
     private volatile com.bloxbean.cardano.yano.wallet.connector.Cip30BridgeServer connectorServer;
     private volatile com.bloxbean.cardano.yano.wallet.connector.Cip30LocalSocketServer connectorSocketServer;
     private volatile Cip30AllowlistStore cip30Allowlist;
+    private volatile ConnectorSettingsStore connectorSettings;
+    /** Kept so the connector can be restarted when the transport changes. */
+    private volatile com.bloxbean.cardano.yano.wallet.ui.contract.Cip30Prompt connectorPrompt;
     private volatile TxEffectSummariser txEffectSummariser;
     private boolean connectorStarted;
     // Native Messaging (ADR-035 M5) is the default transport. The legacy
@@ -592,29 +595,52 @@ public class DefaultWalletUiController implements WalletUiController {
             return;
         }
         connectorStarted = true; // set before the try so a partial failure doesn't re-bind on retry
+        connectorPrompt = prompt;
         try {
             cip30Allowlist = new Cip30AllowlistStore(backendManager.dataDir());
+            if (connectorSettings == null) {
+                connectorSettings = new ConnectorSettingsStore(backendManager.dataDir());
+            }
+            // Choosing WebSocket must actually SWITCH, not merely add. The
+            // extension always tries Native Messaging first and falls back only
+            // when it throws (see background.js relay/probeReachability), so
+            // leaving the native socket running would keep every dApp on native
+            // and the user's choice would appear to do nothing. It would also
+            // make the launch warning false — it says dApps reach the wallet over
+            // the WebSocket, which would not be true.
+            //
+            // The --enable-ws-connector flag keeps its older additive meaning.
+            boolean webSocketChosen = connectorSettings.isWebSocket();
+            wsConnectorEnabled = wsConnectorEnabled || webSocketChosen;
             var wallet = new WalletCip30Wallet(backendManager, () -> session);
             var approvals = new Cip30ApprovalGate(cip30Allowlist, prompt, summariser());
             // Default transport (ADR-035 M5): the browser-launched proxy relays
             // to this socket — no localhost port, and Chrome vouches for the
             // extension id. Best-effort; a bind failure never breaks the wallet.
-            try {
-                var socketServer = new com.bloxbean.cardano.yano.wallet.connector.Cip30LocalSocketServer(
-                        new NativeMessagingInstaller().socketPath(), wallet, approvals);
-                socketServer.start();
-                connectorSocketServer = socketServer;
-            } catch (Exception e) {
-                System.err.println("CIP-30 native-messaging socket could not start: " + e.getMessage());
+            if (webSocketChosen) {
+                System.err.println("CIP-30 native-messaging socket NOT started — the WebSocket"
+                        + " transport was selected in Settings.");
+            } else {
+                try {
+                    var socketServer = new com.bloxbean.cardano.yano.wallet.connector.Cip30LocalSocketServer(
+                            new NativeMessagingInstaller().socketPath(), wallet, approvals);
+                    socketServer.start();
+                    connectorSocketServer = socketServer;
+                } catch (Exception e) {
+                    System.err.println("CIP-30 native-messaging socket could not start: " + e.getMessage());
+                }
             }
             // Legacy localhost WebSocket — opt-in only (--enable-ws-connector),
             // because its origin is self-asserted (ADR-035 transport decision).
             if (wsConnectorEnabled) {
-                var server = new com.bloxbean.cardano.yano.wallet.connector.Cip30BridgeServer(wallet, approvals);
+                var server = new com.bloxbean.cardano.yano.wallet.connector.Cip30BridgeServer(
+                        connectorSettings.settings().wsPort(), wallet, approvals);
                 server.start();
                 connectorServer = server;
-                System.err.println("CIP-30 legacy WebSocket connector ENABLED on 127.0.0.1"
-                        + " (--enable-ws-connector); Native Messaging is preferred.");
+                System.err.println("CIP-30 legacy WebSocket connector ENABLED on 127.0.0.1:"
+                        + connectorSettings.settings().wsPort()
+                        + " — the calling page's origin is self-asserted here, so prefer Native"
+                        + " Messaging (Settings -> Browser connector).");
             }
         } catch (RuntimeException e) {
             // A bind failure (e.g. the port is taken) must never break the wallet.
@@ -637,6 +663,44 @@ public class DefaultWalletUiController implements WalletUiController {
             txEffectSummariser = null;
         }
         connectorStarted = false;
+    }
+
+    @Override
+    public ConnectorSettingsView connectorSettings() {
+        ConnectorSettingsStore store = connectorSettings;
+        if (store == null) {
+            store = new ConnectorSettingsStore(backendManager.dataDir());
+            connectorSettings = store;
+        }
+        var current = store.settings();
+        return new ConnectorSettingsView(current.transport(), current.wsPort(), store.isWeakTransport());
+    }
+
+    @Override
+    public CompletableFuture<String> setConnectorTransport(String transport, int wsPort) {
+        return async(() -> {
+            ConnectorSettingsStore store = connectorSettings;
+            if (store == null) {
+                store = new ConnectorSettingsStore(backendManager.dataDir());
+                connectorSettings = store;
+            }
+            var saved = store.save(transport, wsPort);
+
+            // Restart the connector so the choice takes effect now. Without this
+            // the setting would only apply after a restart, and a user switching
+            // BECAUSE the connector is broken would have no way to tell whether
+            // it helped.
+            var prompt = connectorPrompt;
+            stopDappConnector();
+            wsConnectorEnabled = ConnectorSettingsStore.WEBSOCKET.equals(saved.transport());
+            if (prompt != null) {
+                startDappConnector(prompt);
+            }
+            return ConnectorSettingsStore.WEBSOCKET.equals(saved.transport())
+                    ? "Listening on localhost:" + saved.wsPort()
+                    + " — any local program can reach this port, so prefer Native Messaging."
+                    : "Using Native Messaging. Restart your browser if a dApp still cannot connect.";
+        });
     }
 
     @Override

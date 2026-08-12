@@ -39,6 +39,10 @@ public final class YanoWalletApp {
         Path dataDirRoot = Paths.get(expandHome(opts.getOrDefault("data-dir",
                 System.getProperty("user.home") + "/.yano-wallet")));
 
+        // Before anything else can log: a packaged app has no console, so without
+        // this a failure that happens before the node starts leaves no trace.
+        WalletLog.install(dataDirRoot);
+
         // The controller resolves its node connection lazily via the manager;
         // the UI's Connect screen (or the CLI pre-seed below) drives it.
         WalletBackendManager backendManager = new WalletBackendManager(dataDirRoot);
@@ -105,6 +109,12 @@ public final class YanoWalletApp {
             if (autoWalletId != null && autoPassphrase != null) {
                 YanoWalletApplication.setAutoUnlock(autoWalletId, autoPassphrase.toCharArray());
             }
+            String windowSize = opts.get("window-size");
+            if (windowSize != null && windowSize.contains("x")) {
+                String[] wh = windowSize.split("x", 2);
+                YanoWalletApplication.setWindowSize(
+                        Integer.parseInt(wh[0].trim()), Integer.parseInt(wh[1].trim()));
+            }
             String autoScreen = opts.get("screen");
             if (autoScreen != null) {
                 YanoWalletApplication.setAutoNavigate(autoScreen);
@@ -133,6 +143,16 @@ public final class YanoWalletApp {
                         Thread.sleep(delayMs);
                         Platform.runLater(() -> {
                             try {
+                                // A screen taller than the window cannot be
+                                // verified otherwise: the snapshot only contains
+                                // what is rendered.
+                                if ("bottom".equalsIgnoreCase(opts.getOrDefault("scroll", ""))) {
+                                    var node = scene.lookup(".screen-scroll");
+                                    if (node instanceof javafx.scene.control.ScrollPane pane) {
+                                        pane.setVvalue(1.0);
+                                        pane.layout();
+                                    }
+                                }
                                 writePng(scene.snapshot(null), new File(screenshot));
                                 System.out.println("SCREENSHOT_WRITTEN " + screenshot);
                             } catch (Exception e) {

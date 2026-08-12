@@ -44,7 +44,10 @@ function probe() {
         done('bad', 'Connector error', chrome.runtime.lastError.message);
       } else if (res && res.ok) {
         done('ok', 'Connected to Yano wallet',
-          res.transport === 'native' ? 'via Native Messaging' : 'via legacy WebSocket');
+          res.transport === 'native'
+            ? 'via Native Messaging'
+            : 'via legacy WebSocket — the page origin is self-asserted here, so prefer '
+              + 'Native Messaging (wallet: Settings → Browser connector)');
       } else {
         done('bad', 'Wallet not running',
           (res && res.error) ? res.error : 'Start and unlock the Yano desktop wallet.');

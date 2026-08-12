@@ -217,6 +217,31 @@ public interface WalletUiController {
      */
     CompletableFuture<String> installNativeMessagingHost();
 
+    /**
+     * How the browser reaches the wallet (ADR-035).
+     *
+     * <p>{@code NATIVE_MESSAGING} is the default and the only transport that can
+     * identify its caller: the browser launches the connector and vouches for the
+     * extension's pinned id. Over the localhost WebSocket the origin is
+     * self-asserted, so any local process can claim to be a dApp — which is why
+     * {@link ConnectorSettingsView#weak()} exists and why the UI warns about it
+     * on every launch rather than once.
+     */
+    ConnectorSettingsView connectorSettings();
+
+    /**
+     * Switches transport and restarts the connector. Returns a message describing
+     * what is now listening, for the UI to show.
+     */
+    CompletableFuture<String> setConnectorTransport(String transport, int wsPort);
+
+    /**
+     * @param weak true when the active transport cannot prove which extension is
+     *             calling — the UI must keep saying so, not merely record it
+     */
+    record ConnectorSettingsView(String transport, int wsPort, boolean weak) {
+    }
+
     // --- active-session queries ---
     CompletableFuture<BalanceView> balance();
 
