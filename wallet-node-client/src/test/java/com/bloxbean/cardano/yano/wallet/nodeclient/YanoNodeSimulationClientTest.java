@@ -20,7 +20,7 @@ import static org.assertj.core.api.Assertions.assertThatThrownBy;
  * ADR-042 SIM-M0/SIM-M2: the node client's simulation surface.
  *
  * <p>The load-bearing case is {@link #missingRouteIsNotAMissingUtxo()}: both a
- * node that does not serve the route and a node reporting "no such output"
+ * node that does not serve the route and a node reporting "no such transaction"
  * answer 404, and confusing them would report "your node is too old" as "this
  * input is not yours" — silently under-reporting a loss.
  */
@@ -29,7 +29,7 @@ class YanoNodeSimulationClientTest {
     private static final String POLICY = "0f5560dbc05282e05507aedb02d823d9d9f0805037bc4b8a24e6c1b1";
     private static final String NAME_HEX = "4d494e";   // "MIN"
 
-    private static final String UTXO_JSON = """
+    private static final String OUTPUT_JSON = """
             {
               "tx_hash": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa1", "output_index": 0,
               "address": "addr_test1qq_owner",
@@ -42,6 +42,16 @@ class YanoNodeSimulationClientTest {
               "block": "beef"
             }
             """.formatted(POLICY, NAME_HEX);
+
+    /** The {@code /txs/{hash}/utxos} path, which is what the client resolves through. */
+    private static String utxosOf(String txHash) {
+        return "/api/v1/txs/" + txHash + "/utxos";
+    }
+
+    /** The envelope both backends wrap their outputs in. */
+    private static String txUtxos(String... outputs) {
+        return "{\"hash\":\"aa11\",\"inputs\":[],\"outputs\":[" + String.join(",", outputs) + "]}";
+    }
 
     private static final String EVAL_SUCCESS_JSON = """
             {"type":"jsonwsp/response","version":"1.0","servicename":"ogmios","methodname":"EvaluateTx",
@@ -74,7 +84,7 @@ class YanoNodeSimulationClientTest {
 
     @Test
     void resolvesAnOutputReferenceWithItsAssets() {
-        node.on("/api/v1/utxos/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa1/0", UTXO_JSON);
+        node.on(utxosOf("aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa1"), txUtxos(OUTPUT_JSON));
 
         ResolvedOutput output = client.getUtxo("aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa1", 0);
 
@@ -91,19 +101,55 @@ class YanoNodeSimulationClientTest {
     }
 
     @Test
-    void anEmptyBodied404MeansTheOutputIsNotInTheUtxoSet() {
-        // What a node that serves the route answers for a spent / not-yet-on-chain
-        // output: 404 with no body at all.
-        node.on("/api/v1/utxos/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa1/0", req -> new StubYanoNode.Response(404, "application/json", ""));
+    void aJsonBodied404MeansTheTransactionIsNotOnChain() {
+        // A Yano node's answer for a transaction it has never seen.
+        node.on(utxosOf("aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa1"),
+                req -> new StubYanoNode.Response(404, "application/json",
+                        "{\"error\":\"Transaction not found\"}"));
 
         assertThat(client.getUtxo("aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa1", 0)).isNull();
     }
 
     @Test
+    void anRfc7807BodiedNotFoundStillMeansTheOutputIsAbsent() {
+        // yaci-store says the same thing as application/problem+json. Reading
+        // "404 with a body" as "this node has no such route" made the wallet
+        // declare a perfectly capable DevKit incapable of looking up inputs.
+        node.on(utxosOf("aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa1"),
+                req -> new StubYanoNode.Response(404, "application/problem+json",
+                        "{\"type\":\"about:blank\",\"title\":\"Not Found\",\"status\":404,"
+                                + "\"detail\":\"Transaction not found\"}"));
+
+        assertThat(client.getUtxo("aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa1", 0))
+                .isNull();
+    }
+
+    @Test
+    void anEmptyBodied404IsAlsoJustAnAbsentTransaction() {
+        node.on(utxosOf("aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa1"),
+                req -> new StubYanoNode.Response(404, "application/json", ""));
+
+        assertThat(client.getUtxo("aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa1", 0)).isNull();
+    }
+
+    @Test
+    void aProblemJsonNotFoundLeavesTheProbeReportingTheNodeCapable() {
+        node.on(utxosOf(zeros()),
+                req -> new StubYanoNode.Response(404, "application/problem+json",
+                        "{\"status\":404,\"detail\":\"Transaction not found\"}"));
+
+        assertThat(client.probeSimulationCapabilities().utxoLookup())
+                .isEqualTo(Support.AVAILABLE);
+    }
+
+    @Test
     void missingRouteIsNotAMissingUtxo() {
-        // No handler registered → the stub's default 404 carries a body, which is
-        // what a node that does not serve this route looks like. This MUST NOT be
-        // read as "the output is not yours".
+        // A server with no such route answers with its generic HTML error page —
+        // that, not merely "has a body", is what distinguishes it from a handler
+        // reporting a miss. This MUST NOT be read as "the output is not yours".
+        node.on(utxosOf("aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa1"),
+                req -> new StubYanoNode.Response(404, "text/html",
+                        "<html><body><h1>Resource not found</h1></body></html>"));
         assertThatThrownBy(() -> client.getUtxo("aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa1", 0))
                 .isInstanceOf(TxSimulationException.class)
                 .hasMessageContaining("does not serve");
@@ -111,12 +157,90 @@ class YanoNodeSimulationClientTest {
 
     @Test
     void aNodeErrorIsNeverReportedAsAResolvedOutput() {
-        node.on("/api/v1/utxos/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa1/0", req -> new StubYanoNode.Response(503, "application/json",
-                "{\"error\":\"UTXO state disabled\"}"));
+        node.on(utxosOf("aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa1"),
+                req -> new StubYanoNode.Response(503, "application/json",
+                        "{\"error\":\"UTXO state disabled\"}"));
 
         assertThatThrownBy(() -> client.getUtxo("aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa1", 0))
                 .isInstanceOf(TxSimulationException.class)
                 .hasMessageContaining("503");
+    }
+
+    @Test
+    void aYaciStoreEnvelopeResolvesIdenticallyToAYanoOne() {
+        // Verbatim from a DevKit's yaci-store: the extra keys a Yano node omits
+        // (policy_id, asset_name, stake_address, inline_datum_json) and quantities
+        // as JSON strings. Choosing the route where both backends agree is what
+        // retired the owner_addr/amounts fallback — so this pins that they DO
+        // agree, rather than leaving it as an assumption. Reading only one
+        // backend's spelling once made every input on a DevKit fail to resolve,
+        // which the user saw as "the effect on your wallet cannot be computed".
+        node.on(utxosOf("aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa1"), """
+                {"hash":"aa11","inputs":[],"outputs":[
+                  {"tx_hash":"aa11","output_index":0,
+                   "address":"addr_test1qq_owner",
+                   "stake_address":"stake_test1uz_owner",
+                   "amount":[{"unit":"lovelace","policy_id":null,"asset_name":"lovelace",
+                              "quantity":"2828603"},
+                             {"unit":"%s%s","policy_id":"%s","asset_name":"MIN","quantity":"340"}],
+                   "data_hash":null,"inline_datum":null,"inline_datum_json":null,
+                   "script_ref":null,"reference_script_hash":null}]}
+                """.formatted(POLICY, NAME_HEX, POLICY));
+
+        ResolvedOutput output = client.getUtxo(
+                "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa1", 0);
+
+        assertThat(output.address()).isEqualTo("addr_test1qq_owner");
+        assertThat(output.lovelace()).isEqualTo(new BigInteger("2828603"));
+        assertThat(output.assets()).singleElement().satisfies(asset -> {
+            assertThat(asset.policyId()).isEqualTo(POLICY);
+            assertThat(asset.assetNameHex()).isEqualTo(NAME_HEX);
+            assertThat(asset.quantity()).isEqualTo(BigInteger.valueOf(340));
+        });
+    }
+
+    @Test
+    void theRequestedOutputIsPickedByItsDeclaredIndexNotItsPosition() {
+        // THE case this route introduces. It answers with every output of the
+        // transaction, so the wallet has to pick one — and nothing promises the
+        // list is ordered or complete. Taking outputs[index] on a list that is
+        // neither resolves a different address holding a different amount, while
+        // still reporting the summary as complete: the confident-smaller-loss
+        // outcome ADR-042 exists to prevent.
+        node.on(utxosOf("aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa1"), txUtxos(
+                """
+                {"output_index":2,"address":"addr_attacker",
+                 "amount":[{"unit":"lovelace","quantity":"1"}]}""",
+                """
+                {"output_index":0,"address":"addr_mine",
+                 "amount":[{"unit":"lovelace","quantity":"9000000"}]}"""));
+
+        ResolvedOutput output = client.getUtxo(
+                "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa1", 0);
+
+        assertThat(output.address()).isEqualTo("addr_mine");
+        assertThat(output.lovelace()).isEqualTo(new BigInteger("9000000"));
+    }
+
+    @Test
+    void anIndexTheTransactionDoesNotHaveIsUnresolvedRatherThanWrong() {
+        node.on(utxosOf("aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa1"), txUtxos("""
+                {"output_index":0,"address":"addr_mine",
+                 "amount":[{"unit":"lovelace","quantity":"9000000"}]}"""));
+
+        assertThat(client.getUtxo("aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa1", 7))
+                .isNull();
+    }
+
+    @Test
+    void anOutputThatDoesNotDeclareItsIndexIsRefusedNotGuessed() {
+        node.on(utxosOf("aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa1"), txUtxos("""
+                {"address":"addr_mine","amount":[{"unit":"lovelace","quantity":"9000000"}]}"""));
+
+        assertThatThrownBy(() ->
+                client.getUtxo("aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa1", 0))
+                .isInstanceOf(TxSimulationException.class)
+                .hasMessageContaining("output_index");
     }
 
     @Test
@@ -133,26 +257,36 @@ class YanoNodeSimulationClientTest {
     void aMalformed200IsRejectedRatherThanSilentlyUndercounted() {
         // Every one of these, read leniently, would remove value from "what
         // leaves my wallet" while still reporting the summary as complete — the
-        // confident-smaller-loss case ADR-042 calls the worst outcome.
+        // confident-smaller-loss case ADR-042 calls the worst outcome. Each entry
+        // declares output_index 0 so that what is under test is the reading of the
+        // entry, not the selecting of it.
         record Case(String label, String body) {
         }
         List.of(
                 new Case("empty body", ""),
                 new Case("not an object", "[]"),
-                new Case("no address", """
-                        {"amount":[{"unit":"lovelace","quantity":"1000000"}]}"""),
-                new Case("blank address", """
-                        {"address":"  ","amount":[{"unit":"lovelace","quantity":"1000000"}]}"""),
-                new Case("no amount list", """
-                        {"address":"addr_test1qq"}"""),
-                new Case("amount not an array", """
-                        {"address":"addr_test1qq","amount":{"unit":"lovelace"}}"""),
-                new Case("short asset unit", """
-                        {"address":"addr_test1qq","amount":[{"unit":"abcd","quantity":"5"}]}"""),
-                new Case("unreadable quantity", """
-                        {"address":"addr_test1qq","amount":[{"unit":"lovelace","quantity":"1.5e6"}]}""")
+                new Case("no outputs key", "{\"hash\":\"aa11\",\"inputs\":[]}"),
+                new Case("outputs not an array", "{\"hash\":\"aa11\",\"outputs\":{}}"),
+                new Case("no address", txUtxos("""
+                        {"output_index":0,"amount":[{"unit":"lovelace","quantity":"1000000"}]}""")),
+                new Case("blank address", txUtxos("""
+                        {"output_index":0,"address":"  ",
+                         "amount":[{"unit":"lovelace","quantity":"1000000"}]}""")),
+                new Case("no amount list", txUtxos("""
+                        {"output_index":0,"address":"addr_test1qq"}""")),
+                new Case("amount not an array", txUtxos("""
+                        {"output_index":0,"address":"addr_test1qq","amount":{"unit":"lovelace"}}""")),
+                new Case("short asset unit", txUtxos("""
+                        {"output_index":0,"address":"addr_test1qq",
+                         "amount":[{"unit":"abcd","quantity":"5"}]}""")),
+                new Case("unreadable quantity", txUtxos("""
+                        {"output_index":0,"address":"addr_test1qq",
+                         "amount":[{"unit":"lovelace","quantity":"1.5e6"}]}""")),
+                new Case("owner_addr only — the non-standard spelling is no longer read", txUtxos("""
+                        {"output_index":0,"owner_addr":"addr_test1qq",
+                         "amounts":[{"unit":"lovelace","quantity":"1000000"}]}"""))
         ).forEach(testCase -> {
-            node.on("/api/v1/utxos/bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb2/0", testCase.body());
+            node.on(utxosOf("bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb2"), testCase.body());
             assertThatThrownBy(() -> client.getUtxo("bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb2", 0))
                     .as(testCase.label())
                     .isInstanceOf(TxSimulationException.class);
@@ -161,11 +295,10 @@ class YanoNodeSimulationClientTest {
 
     @Test
     void duplicateLovelaceEntriesSumRatherThanOverwrite() {
-        node.on("/api/v1/utxos/ccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc3/0", """
-                {"address":"addr_test1qq","amount":[
+        node.on(utxosOf("ccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc3"), txUtxos("""
+                {"output_index":0,"address":"addr_test1qq","amount":[
                   {"unit":"lovelace","quantity":"1000000"},
-                  {"unit":"lovelace","quantity":"500000"}]}
-                """);
+                  {"unit":"lovelace","quantity":"500000"}]}"""));
 
         assertThat(client.getUtxo("ccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc3", 0).lovelace()).isEqualTo(new BigInteger("1500000"));
     }
@@ -173,11 +306,10 @@ class YanoNodeSimulationClientTest {
     @Test
     void quantitiesBeyondLongAreCarriedExactly() {
         String huge = "123456789012345678901234567890";
-        node.on("/api/v1/utxos/ddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd4/0", """
-                {"address":"addr_test1qq","amount":[
+        node.on(utxosOf("ddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd4"), txUtxos("""
+                {"output_index":0,"address":"addr_test1qq","amount":[
                   {"unit":"lovelace","quantity":"1000000"},
-                  {"unit":"%s%s","quantity":"%s"}]}
-                """.formatted(POLICY, NAME_HEX, huge));
+                  {"unit":"%s%s","quantity":"%s"}]}""".formatted(POLICY, NAME_HEX, huge)));
 
         assertThat(client.getUtxo("ddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd4", 0).assets())
                 .singleElement()
@@ -221,12 +353,14 @@ class YanoNodeSimulationClientTest {
 
     @Test
     void datumAndReferenceScriptFlagsAreReported() {
-        node.on("/api/v1/utxos/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa1/1", """
+        // reference_script_hash without script_ref on purpose: a Yano node's
+        // tx-utxos DTO has no script_ref field at all, so the reference-script flag
+        // has to survive on the hash alone.
+        node.on(utxosOf("aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa1"), txUtxos("""
                 {"tx_hash":"aa11","output_index":1,"address":"addr_test1_script",
                  "amount":[{"unit":"lovelace","quantity":"2000000"}],
                  "data_hash":"d00d","inline_datum":null,
-                 "script_ref":null,"reference_script_hash":"5c1b"}
-                """);
+                 "reference_script_hash":"5c1b"}"""));
 
         ResolvedOutput output = client.getUtxo("aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa1", 1);
 
@@ -291,7 +425,7 @@ class YanoNodeSimulationClientTest {
 
     @Test
     void probeReportsBothCapabilitiesOnACapableNode() {
-        node.on("/api/v1/utxos/" + zeros() + "/0",
+        node.on(utxosOf(zeros()),
                 req -> new StubYanoNode.Response(404, "application/json", ""));
         node.on("/api/v1/utils/txs/evaluate", evalFailure("CBOR deserialization failed"));
         node.on("/api/v1/node/config", "{\"protocolMagic\":42,\"version\":\"0.1.0-pre12\"}");
@@ -307,7 +441,9 @@ class YanoNodeSimulationClientTest {
 
     @Test
     void probeReportsAnOlderNodeAsUnavailableWithAPlainLanguageReason() {
-        // Neither route registered → both 404 with a body, i.e. absent.
+        // A node without these routes answers with its HTML error page.
+        node.on(utxosOf(zeros()), req -> new StubYanoNode.Response(404,
+                "text/html", "<html><body>Resource not found</body></html>"));
         SimulationCapabilities capabilities = client.probeSimulationCapabilities();
 
         assertThat(capabilities.utxoLookup()).isEqualTo(Support.UNAVAILABLE);
@@ -320,7 +456,7 @@ class YanoNodeSimulationClientTest {
 
     @Test
     void evaluationCanBeOffWhileInputResolutionWorks() {
-        node.on("/api/v1/utxos/" + zeros() + "/0",
+        node.on(utxosOf(zeros()),
                 req -> new StubYanoNode.Response(404, "application/json", ""));
         node.on("/api/v1/utils/txs/evaluate",
                 evalFailure("Script evaluation not initialized. Ensure tx-evaluation is enabled"));
@@ -334,7 +470,7 @@ class YanoNodeSimulationClientTest {
 
     @Test
     void aDisabledUtxoIndexIsReportedAsSuch() {
-        node.on("/api/v1/utxos/" + zeros() + "/0", req -> new StubYanoNode.Response(503,
+        node.on(utxosOf(zeros()), req -> new StubYanoNode.Response(503,
                 "application/json", "{\"error\":\"UTXO state disabled\"}"));
 
         SimulationCapabilities capabilities = client.probeSimulationCapabilities();
@@ -364,7 +500,7 @@ class YanoNodeSimulationClientTest {
         // A locally built node newer than the pinned release reporting an OLDER
         // version must still be reported as capable — capability comes from the
         // probe, the version string only decorates the message.
-        node.on("/api/v1/utxos/" + zeros() + "/0",
+        node.on(utxosOf(zeros()),
                 req -> new StubYanoNode.Response(404, "application/json", ""));
         node.on("/api/v1/utils/txs/evaluate", evalFailure("CBOR deserialization failed"));
         node.on("/api/v1/node/config", "{\"version\":\"0.1.0-pre11\"}");

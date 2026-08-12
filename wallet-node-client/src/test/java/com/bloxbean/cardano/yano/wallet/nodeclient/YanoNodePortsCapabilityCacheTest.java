@@ -21,7 +21,7 @@ class YanoNodePortsCapabilityCacheTest {
     private StubYanoNode node;
     private YanoNodePorts ports;
 
-    private static final String PROBE_UTXO_PATH = "/api/v1/utxos/" + "0".repeat(64) + "/0";
+    private static final String PROBE_UTXO_PATH = "/api/v1/txs/" + "0".repeat(64) + "/utxos";
     private static final String EVALUATE_PATH = "/api/v1/utils/txs/evaluate";
 
     private static String evalFailure(String message) {
@@ -48,7 +48,7 @@ class YanoNodePortsCapabilityCacheTest {
 
     private long probeRequestCount() {
         return node.requests().stream()
-                .filter(r -> r.path().startsWith("/api/v1/utxos/") || r.path().equals(EVALUATE_PATH))
+                .filter(r -> r.path().endsWith("/utxos") || r.path().equals(EVALUATE_PATH))
                 .count();
     }
 

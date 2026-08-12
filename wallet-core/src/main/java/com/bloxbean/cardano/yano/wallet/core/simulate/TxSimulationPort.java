@@ -21,9 +21,11 @@ public interface TxSimulationPort {
     /**
      * Resolves an output reference.
      *
-     * @return the output, or {@code null} when the node positively reports it is
-     *         not in the UTxO set (already spent, or not yet on-chain). A
-     *         {@code null} is an <em>answer</em>, not an error.
+     * @return the output, or {@code null} when the node positively reports it
+     *         cannot name that output — the creating transaction is not on-chain,
+     *         or it has no output at that index. A {@code null} is an
+     *         <em>answer</em>, not an error, but it is not one that says whose the
+     *         output was, so callers still treat it as unresolved.
      * @throws TxSimulationException when the node could not be asked at all — the
      *         caller must treat this as "unresolved", never as "not mine".
      */

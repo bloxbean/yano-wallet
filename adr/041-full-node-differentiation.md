@@ -53,7 +53,7 @@ Surveyed 2026-08-09 against the Yano node source. These are not speculative:
 | Capability | Where | Wallet use |
 |---|---|---|
 | Plutus script evaluation | `EvaluationResource` → `POST /utils/txs/evaluate` (Ogmios-shaped) | simulate before signing |
-| UTxO by output reference | `GET /utxos/{txHash}/{index}` | resolve a transaction's inputs |
+| UTxO by output reference | `GET /txs/{txHash}/utxos` (Blockfrost-standard; also `GET /utxos/{txHash}/{index}`, a Yano/yaci-store extension) | resolve a transaction's inputs — ADR-042 uses the standard route, see *Which route resolves inputs* there |
 | Mempool | `runtime/.../chain/MemPool`, `TransactionResource` | inclusion estimates, congestion |
 | Reward calculation | `EpochRewardCalculator`, `EpochStakeSnapshotService` | recompute, explain, predict rewards |
 | Governance ratification | `ledger-state/.../governance/ratification` | local outcome simulation |

@@ -14,9 +14,11 @@ import static org.assertj.core.api.Assertions.assertThat;
  * <pre>./gradlew :wallet-node-client:test -Dyano.live.node=http://127.0.0.1:7070/api/v1/</pre>
  *
  * <p>This exists because the capability probe rests on a distinction the stub
- * cannot prove: that a node serving {@code /utxos/{hash}/{index}} answers a miss
- * with an <em>empty</em> 404 while an absent route answers with an error page.
- * That is a property of the real node, so it deserves a test against one.
+ * cannot prove: that a node serving {@code /txs/{hash}/utxos} answers an unknown
+ * transaction with a 404 carrying a JSON body, while an absent route answers with
+ * an HTML error page. That is a property of the real server, so it deserves a test
+ * against one — and against a DevKit's yaci-store too, which says the same thing
+ * in RFC 7807 and is equally a pass.
  */
 class LiveNodeSimulationProbeTest {
 
@@ -30,7 +32,7 @@ class LiveNodeSimulationProbeTest {
         SimulationCapabilities capabilities = client.probeSimulationCapabilities();
 
         assertThat(capabilities.utxoLookup())
-                .as("live node should serve /utxos/{txHash}/{index}")
+                .as("live node should serve /txs/{txHash}/utxos")
                 .isEqualTo(SimulationCapabilities.Support.AVAILABLE);
         assertThat(capabilities.scriptEvaluation())
                 .as("live node should serve /utils/txs/evaluate with an initialised evaluator")
@@ -50,13 +52,19 @@ class LiveNodeSimulationProbeTest {
 
     @Test
     @EnabledIfSystemProperty(named = NODE_URL_PROPERTY, matches = ".+")
-    void garbageCborIsRejectedByTheEvaluatorItselfNotByAMissingRoute() {
+    void garbageIsRejectedByTheEvaluatorItselfNotByAMissingRoute() {
         YanoNodeClient client = new YanoNodeClient(System.getProperty(NODE_URL_PROPERTY));
 
         ScriptEvaluation evaluation = client.evaluateTx("00");
 
-        // FAILURE (the evaluator ran and rejected it), never UNAVAILABLE.
-        assertThat(evaluation.outcome()).isEqualTo(ScriptEvaluation.Outcome.FAILURE);
-        assertThat(evaluation.message()).isNotBlank();
+        // Backends disagree on HOW they reject garbage — a Yano node answers 200
+        // with an Ogmios EvaluationFailure, yaci-store answers 500 — so the
+        // portable assertion is that the wallet never mistakes either for a
+        // transaction whose scripts were proven to fail.
+        assertThat(evaluation.outcome()).isIn(
+                ScriptEvaluation.Outcome.FAILURE, ScriptEvaluation.Outcome.UNAVAILABLE);
+        assertThat(client.probeSimulationCapabilities().scriptEvaluation())
+                .as("the evaluate route exists on this node")
+                .isEqualTo(SimulationCapabilities.Support.AVAILABLE);
     }
 }
