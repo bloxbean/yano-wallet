@@ -82,7 +82,35 @@ public enum WalletNetwork {
             case MAINNET -> "https://cardanoscan.io/transaction/" + txHash;
             case PREPROD -> "https://preprod.cardanoscan.io/transaction/" + txHash;
             case PREVIEW -> "https://preview.cardanoscan.io/transaction/" + txHash;
-            case DEVNET, YACI_DEVKIT -> null;
+            // Yaci DevKit ships Yaci Viewer, a local explorer, and serves a
+            // transaction at /transactions/{hash} (verified against a running
+            // DevKit: that path returns the transaction, /tx/{hash} does not
+            // exist). It is optional and its port is configurable, so this link
+            // can be dead — but a devnet transaction is otherwise unviewable,
+            // and the viewer is part of the standard DevKit setup.
+            case YACI_DEVKIT -> YACI_VIEWER_BASE_URL + "/transactions/" + txHash;
+            // A hand-run Yano devnet has no explorer at all, so a link would go
+            // nowhere. The hash is shown as plain text instead.
+            case DEVNET -> null;
+        };
+    }
+
+    /** Yaci DevKit's bundled explorer, on its default port. */
+    public static final String YACI_VIEWER_BASE_URL = "http://localhost:5173";
+
+    /**
+     * The name to show a user. The id is a storage key and an API value — it names
+     * directories on disk and round-trips through {@link #fromId} — so it stays
+     * lowercase and stable while this can say what the network actually is.
+     * "devnet" in particular is ambiguous now that two of them exist.
+     */
+    public String displayName() {
+        return switch (this) {
+            case DEVNET -> "Yano Devnet";
+            case YACI_DEVKIT -> "Yaci DevKit";
+            case PREVIEW -> "Preview";
+            case PREPROD -> "Preprod";
+            case MAINNET -> "Mainnet";
         };
     }
 

@@ -16,6 +16,14 @@ public interface WalletUiController {
     /** The networks the wallet can connect to. */
     List<String> availableNetworks();
 
+    /**
+     * The name to SHOW for a network id. Ids stay lowercase and stable because
+     * they key storage directories and round-trip through the API; this is what a
+     * user reads. "devnet" is ambiguous now that a Yano devnet and a Yaci DevKit
+     * devnet both exist.
+     */
+    String networkLabel(String networkId);
+
     /** The persisted connection, or null on first run. */
     ConnectionInfo savedConnection();
 

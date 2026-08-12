@@ -235,7 +235,7 @@ public class Shell {
 
         // Clickable: the network pill is where people look when they want to
         // change networks, so it goes to the same place Settings does.
-        Button network = new Button(controller.networkId());
+        Button network = new Button(controller.networkLabel(controller.networkId()));
         network.getStyleClass().addAll("chip", "chip-network", "chip-button");
         network.setMaxWidth(Double.MAX_VALUE);
         network.setAlignment(Pos.CENTER);

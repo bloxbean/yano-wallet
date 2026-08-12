@@ -102,6 +102,15 @@ public class DefaultWalletUiController implements WalletUiController {
     }
 
     @Override
+    public String networkLabel(String networkId) {
+        try {
+            return WalletNetwork.fromId(networkId).displayName();
+        } catch (RuntimeException e) {
+            return networkId; // an unknown id is still better shown than swallowed
+        }
+    }
+
+    @Override
     public String defaultBaseUrl(String networkId) {
         return WalletNetwork.fromId(networkId).defaultBaseUrl();
     }

@@ -106,6 +106,23 @@ public class ConnectScreen {
         tagline.getStyleClass().add("brand-sub");
 
         networkPicker.setItems(FXCollections.observableArrayList(controller.availableNetworks()));
+        // Show names, keep ids: every downstream call (connect, storage paths,
+        // fromId) works on the id, so converting only at the edge avoids
+        // threading a second identifier through the whole screen.
+        networkPicker.setConverter(new javafx.util.StringConverter<>() {
+            @Override
+            public String toString(String networkId) {
+                return networkId == null ? "" : controller.networkLabel(networkId);
+            }
+
+            @Override
+            public String fromString(String label) {
+                return controller.availableNetworks().stream()
+                        .filter(id -> controller.networkLabel(id).equals(label))
+                        .findFirst()
+                        .orElse(label);
+            }
+        });
         networkPicker.setValue(controller.availableNetworks().contains("preprod")
                 ? "preprod" : controller.availableNetworks().get(0));
         networkPicker.setMaxWidth(Double.MAX_VALUE);
@@ -250,9 +267,10 @@ public class ConnectScreen {
             // so it should never be a surprise consequence of opening the app.
             connectButton.setText(saved.managed() ? "Start node" : "Connect");
             statusLabel.setText(saved.managed()
-                    ? "Ready to start the local " + saved.networkId() + " node."
+                    ? "Ready to start the local " + controller.networkLabel(saved.networkId()) + " node."
                     + "  Choose a different network above to change it."
-                    : "Ready to connect to " + saved.networkId() + " at " + saved.baseUrl()
+                    : "Ready to connect to " + controller.networkLabel(saved.networkId())
+                    + " at " + saved.baseUrl()
                     + ".  Choose a different network above to change it.");
             return;
         }
@@ -260,7 +278,7 @@ public class ConnectScreen {
         // subsequent launches are one-click. Name the target rather than hiding
         // it behind "your saved node", and keep Cancel available throughout —
         // otherwise a saved connection can never be changed.
-        beginAttempt(saved.managed(), "Reconnecting to " + saved.networkId()
+        beginAttempt(saved.managed(), "Reconnecting to " + controller.networkLabel(saved.networkId())
                 + (saved.managed() ? " · local node…" : " · " + saved.baseUrl()));
         runConnect(controller.reconnectSaved());
     }

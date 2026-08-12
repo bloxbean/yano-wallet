@@ -69,6 +69,56 @@ class WalletNetworkTest {
     }
 
     @Test
+    void publicNetworksLinkToTheirCardanoscan() {
+        String hash = "aa11";
+        assertThat(WalletNetwork.MAINNET.explorerTxUrl(hash)).isEqualTo("https://cardanoscan.io/transaction/aa11");
+        assertThat(WalletNetwork.PREPROD.explorerTxUrl(hash)).contains("preprod.cardanoscan.io");
+        assertThat(WalletNetwork.PREVIEW.explorerTxUrl(hash)).contains("preview.cardanoscan.io");
+    }
+
+    @Test
+    void yaciDevkitLinksToTheLocalYaciViewer() {
+        // Verified against a running DevKit: /transactions/{hash} serves the
+        // transaction, /tx/{hash} does not exist.
+        assertThat(WalletNetwork.YACI_DEVKIT.explorerTxUrl("aa11"))
+                .isEqualTo("http://localhost:5173/transactions/aa11");
+    }
+
+    @Test
+    void aYanoDevnetHasNoExplorerSoItIsNotLinked() {
+        // No viewer ships with a hand-run devnet, so a link would go nowhere —
+        // worse than showing the hash as plain text.
+        assertThat(WalletNetwork.DEVNET.explorerTxUrl("aa11")).isNull();
+    }
+
+    @Test
+    void noNetworkLinksAnEmptyHash() {
+        for (WalletNetwork network : WalletNetwork.values()) {
+            assertThat(network.explorerTxUrl(null)).as(network.id()).isNull();
+            assertThat(network.explorerTxUrl("  ")).as(network.id()).isNull();
+        }
+    }
+
+    @Test
+    void displayNamesDisambiguateTheTwoDevnets() {
+        assertThat(WalletNetwork.DEVNET.displayName()).isEqualTo("Yano Devnet");
+        assertThat(WalletNetwork.YACI_DEVKIT.displayName()).isEqualTo("Yaci DevKit");
+    }
+
+    @Test
+    void idsStayStableWhileDisplayNamesChange() {
+        // Ids key storage directories and round-trip through fromId, so a display
+        // name must never be mistaken for one.
+        for (WalletNetwork network : WalletNetwork.values()) {
+            assertThat(WalletNetwork.fromId(network.id())).isEqualTo(network);
+            assertThat(network.id()).as(network.name()).isLowerCase();
+            assertThat(network.displayName()).as(network.name()).isNotBlank();
+        }
+        assertThat(WalletNetwork.DEVNET.id()).isEqualTo("devnet");
+        assertThat(WalletNetwork.YACI_DEVKIT.id()).isEqualTo("yaci-devkit");
+    }
+
+    @Test
     void rejectsUnsupportedNetworkProfile() {
         assertThatThrownBy(() -> WalletNetwork.fromId("unknown"))
                 .isInstanceOf(IllegalArgumentException.class)

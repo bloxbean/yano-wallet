@@ -243,7 +243,8 @@ public class SettingsScreen implements Shell.Screen {
 
     @Override
     public void refresh() {
-        nodeLine.setText(controller.nodeBaseUrl() + "  ·  " + controller.networkId());
+        nodeLine.setText(controller.nodeBaseUrl() + "  ·  "
+                + controller.networkLabel(controller.networkId()));
         WalletUiController.WalletItem wallet = controller.activeWallet();
         if (wallet != null) {
             walletLine.setText(wallet.name() + "  ·  account #" + wallet.accountIndex()

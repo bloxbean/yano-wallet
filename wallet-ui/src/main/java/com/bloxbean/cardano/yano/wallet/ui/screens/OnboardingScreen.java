@@ -96,7 +96,7 @@ public class OnboardingScreen {
         brand.getStyleClass().add("brand-large");
         Label tagline = new Label("Your keys. Your node. Nothing in between.");
         tagline.getStyleClass().add("brand-sub");
-        Label network = Ui.chip(controller.networkId(), "chip-network");
+        Label network = Ui.chip(controller.networkLabel(controller.networkId()), "chip-network");
         // Beside the network it changes, so the label and the thing it affects
         // are read together.
         Node networkControls = network;
@@ -105,7 +105,7 @@ public class OnboardingScreen {
             switchNetwork.getStyleClass().add("link-button");
             switchNetwork.setTooltip(new Tooltip(
                     "Choose a different network or node. The wallets listed here are the ones "
-                            + "stored for " + controller.networkId() + "."));
+                            + "stored for " + controller.networkLabel(controller.networkId()) + "."));
             switchNetwork.setOnAction(e -> onChangeNetwork.run());
             networkControls = Ui.row(8, network, switchNetwork);
         }
