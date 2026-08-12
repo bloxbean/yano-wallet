@@ -62,6 +62,20 @@ public class YanoWalletApplication extends Application {
         autoNavigate = screenName;
     }
 
+    /**
+     * Verification hook: render the CIP-30 signing prompt with a sample effect.
+     *
+     * <p>The prompt is otherwise reachable only by driving a real dApp through
+     * the browser extension, which makes the wallet's most security-sensitive
+     * dialog the hardest one to look at. Two rendering bugs in it were found this
+     * way, so it earns a way in.
+     */
+    public static void setDemoPrompt(String kind) {
+        demoPrompt = kind;
+    }
+
+    private static String demoPrompt;
+
     /** Verification hook: window size for screenshots of long screens. */
     public static void setWindowSize(int width, int height) {
         if (width > 0 && height > 0) {
@@ -113,6 +127,9 @@ public class YanoWalletApplication extends Application {
         // Start the CIP-30 dApp connector bridge; the prompt renders on the overlay.
         controller.startDappConnector(new FxCip30Prompt(sceneRoot));
         warnIfWeakConnectorTransport();
+        if (demoPrompt != null) {
+            showDemoPrompt(demoPrompt);
+        }
 
         if (onSceneReady != null) {
             onSceneReady.accept(scene);
@@ -154,6 +171,45 @@ public class YanoWalletApplication extends Application {
             alert.initOwner(sceneRoot.getScene() != null ? sceneRoot.getScene().getWindow() : null);
             alert.show();
         });
+    }
+
+    /** Renders a sample signing prompt (verification only; blocks its own thread). */
+    private void showDemoPrompt(String kind) {
+        var incomplete = !"complete".equalsIgnoreCase(kind);
+        var effect = new com.bloxbean.cardano.yano.wallet.ui.contract.TxEffectView(
+                incomplete
+                        ? com.bloxbean.cardano.yano.wallet.ui.contract.TxEffectView.Completeness.INCOMPLETE
+                        : com.bloxbean.cardano.yano.wallet.ui.contract.TxEffectView.Completeness.COMPLETE,
+                incomplete ? "This node cannot look up transaction inputs, so the effect on your wallet "
+                        + "cannot be computed." : null,
+                incomplete ? 0L : -2_500_000L, 170_253L,
+                incomplete ? java.util.List.of()
+                        : java.util.List.of(new com.bloxbean.cardano.yano.wallet.ui.contract
+                                .TxEffectView.AssetChange("MIN",
+                                "0f5560dbc05282e05507aedb02d823d9d9f0805037bc4b8a24e6c1b1", "4d494e",
+                                "-340", true)),
+                com.bloxbean.cardano.yano.wallet.ui.contract.TxEffectView.ScriptOutcome.COULD_NOT_VERIFY,
+                null, 0, 0L, 0L,
+                java.util.List.of(new com.bloxbean.cardano.yano.wallet.ui.contract.TxEffectView.RiskItem(
+                        com.bloxbean.cardano.yano.wallet.ui.contract.TxEffectView.Severity.WARNING,
+                        "Not checked",
+                        incomplete ? "This node cannot look up transaction inputs, so the effect on your "
+                                + "wallet cannot be computed." : "sample")),
+                2, incomplete ? 1 : 1, incomplete ? 1 : 0, 0L,
+                java.util.List.of(), java.util.List.of(), java.util.List.of(), "84a400d9010281825820");
+        Thread thread = new Thread(() -> {
+            try {
+                // The shell replaces sceneRoot's children when a wallet unlocks,
+                // which would remove a modal shown before that.
+                Thread.sleep(3500);
+            } catch (InterruptedException e) {
+                Thread.currentThread().interrupt();
+                return;
+            }
+            new FxCip30Prompt(sceneRoot).confirmSign("http://localhost:3000", effect);
+        }, "demo-prompt");
+        thread.setDaemon(true);
+        thread.start();
     }
 
     /** Taskbar / window icon (used on Windows and Linux; macOS uses the bundled .icns). */

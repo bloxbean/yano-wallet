@@ -186,12 +186,27 @@ public final class FxCip30Prompt implements Cip30Prompt {
         }
 
         // 2. What leaves / arrives.
-        Label ada = new Label(effect.netLovelace() < 0
-                ? "Leaves your wallet:  ₳ " + ada(magnitude(effect.netLovelace()))
-                : "Arrives in your wallet:  ₳ " + ada(BigInteger.valueOf(effect.netLovelace())));
-        ada.getStyleClass().add("card-title");
-        nodes.add(ada);
-        nodes.add(muted("Network fee: ₳ " + ada(effect.feeLovelace()) + "  ·  included in the amount above"));
+        //
+        // When NOTHING could be resolved the diff is not a small number, it is an
+        // absent one — and "Arrives in your wallet: ₳0.000000" reads as "this
+        // gives you nothing" rather than "this was not computed". Say the latter.
+        boolean nothingResolved = effect.inputCount() > 0
+                && effect.unresolvedInputCount() >= effect.inputCount();
+        if (nothingResolved) {
+            Label unknown = new Label("Amount: could not be computed");
+            unknown.getStyleClass().add("card-title");
+            nodes.add(unknown);
+            nodes.add(muted("None of this transaction's inputs could be looked up, so how much "
+                    + "leaves your wallet is unknown — not zero."));
+        } else {
+            Label ada = new Label(effect.netLovelace() < 0
+                    ? "Leaves your wallet:  ₳ " + ada(magnitude(effect.netLovelace()))
+                    : "Arrives in your wallet:  ₳ " + ada(BigInteger.valueOf(effect.netLovelace())));
+            ada.getStyleClass().add("card-title");
+            nodes.add(ada);
+        }
+        nodes.add(muted("Network fee: ₳ " + ada(effect.feeLovelace())
+                + (nothingResolved ? "" : "  ·  included in the amount above")));
 
         for (TxEffectView.AssetChange asset : effect.assetChanges()) {
             Label line = new Label((asset.outgoing() ? "−  " : "+  ")
@@ -249,6 +264,12 @@ public final class FxCip30Prompt implements Cip30Prompt {
         }
 
         for (TxEffectView.RiskItem risk : effect.risks()) {
+            // The limitation is already shown, in full, under the warning at the
+            // top; repeating it verbatim as a bullet just makes the prompt longer
+            // and the real signals harder to find.
+            if (risk.reason() != null && risk.reason().equals(effect.limitation())) {
+                continue;
+            }
             Label item = new Label("•  " + risk.title() + " — " + risk.reason());
             item.setWrapText(true);
             item.getStyleClass().add(risk.severity() == TxEffectView.Severity.INFO

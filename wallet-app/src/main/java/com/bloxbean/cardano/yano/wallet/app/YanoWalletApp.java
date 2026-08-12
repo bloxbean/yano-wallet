@@ -115,6 +115,9 @@ public final class YanoWalletApp {
                 YanoWalletApplication.setWindowSize(
                         Integer.parseInt(wh[0].trim()), Integer.parseInt(wh[1].trim()));
             }
+            if (opts.containsKey("demo-prompt")) {
+                YanoWalletApplication.setDemoPrompt(opts.getOrDefault("demo-prompt", "incomplete"));
+            }
             String autoScreen = opts.get("screen");
             if (autoScreen != null) {
                 YanoWalletApplication.setAutoNavigate(autoScreen);
