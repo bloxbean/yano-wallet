@@ -24,8 +24,8 @@ import java.util.Map;
  *   --network=devnet|preview|preprod|mainnet   (default preprod)
  *   --base-url=http://localhost:7070/api/v1/
  *   --data-dir=~/.yano-wallet
- *   --no-auto-connect                          show the Connect screen instead of
- *                                              reconnecting to the saved node
+ *   --auto-connect                             reconnect to the saved node on launch
+ *                                              (default: stop at the Connect screen)
  *   --enable-ws-connector                      opt into the legacy CIP-30 WebSocket
  *                                              (default: Native Messaging only)
  *   --screenshot=/path/out.png [--screenshot-delay-ms=3000]   verification harness
@@ -50,10 +50,13 @@ public final class YanoWalletApp {
         // the browser-brokered native host otherwise.
         controller.setWsConnectorEnabled(wsConnectorEnabled(opts));
         // --node/--network below PERSIST the choice, so every later launch replays
-        // it. --no-auto-connect stops at the Connect screen instead (the UI also
-        // offers Cancel mid-connect and Settings -> Change network).
-        if (opts.containsKey("no-auto-connect")) {
-            YanoWalletApplication.setAutoConnect(false);
+        // it — but a saved connection no longer reconnects on its own. Launching
+        // stops at the Connect screen with the choice prefilled, so nothing
+        // starts a node until the user asks. --auto-connect restores the old
+        // one-click behaviour; --no-auto-connect is now the default and kept so
+        // existing scripts keep working.
+        if (opts.containsKey("auto-connect") && !opts.containsKey("no-auto-connect")) {
+            YanoWalletApplication.setAutoConnect(true);
         }
         YanoWalletApplication.setController(controller);
 

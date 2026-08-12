@@ -24,7 +24,16 @@ public class YanoWalletApplication extends Application {
     private static String autoUnlockWalletId;
     private static char[] autoUnlockPassphrase;
     private static String autoNavigate;
-    private static boolean autoConnect = true;
+    /**
+     * Whether a saved connection reconnects on launch without asking.
+     *
+     * <p>Off by default. Auto-connecting made the Connect screen flash past on
+     * every launch, which left a user who had picked the wrong network no
+     * reliable moment to change it — and it started a local node (potentially a
+     * long sync) as a side effect of opening the app rather than as something
+     * the user asked for. Opt back in with --auto-connect.
+     */
+    private static boolean autoConnect = false;
 
     private final StackPane sceneRoot = new StackPane();
     private Shell shell;
@@ -141,7 +150,8 @@ public class YanoWalletApplication extends Application {
             shell.dispose();
             shell = null;
         }
-        OnboardingScreen onboarding = new OnboardingScreen(controller, sceneRoot, wallet -> showShell());
+        OnboardingScreen onboarding = new OnboardingScreen(controller, sceneRoot, wallet -> showShell(),
+                () -> showConnect(false));
         sceneRoot.getChildren().setAll(onboarding.root());
         if (unlockTarget != null) {
             onboarding.showUnlockFor(unlockTarget);

@@ -244,7 +244,16 @@ public class ConnectScreen {
             urlField.setText(saved.baseUrl());
         }
         if (!autoConnect) {
-            statusLabel.setText("Choose a network and how to reach it.");
+            // A returning user lands here with their last choice prefilled but
+            // NOT connected. Say which network is about to be used and what the
+            // button will do — starting a local node can sync for a long time,
+            // so it should never be a surprise consequence of opening the app.
+            connectButton.setText(saved.managed() ? "Start node" : "Connect");
+            statusLabel.setText(saved.managed()
+                    ? "Ready to start the local " + saved.networkId() + " node."
+                    + "  Choose a different network above to change it."
+                    : "Ready to connect to " + saved.networkId() + " at " + saved.baseUrl()
+                    + ".  Choose a different network above to change it.");
             return;
         }
         // Returning user with a saved connection: reconnect automatically so

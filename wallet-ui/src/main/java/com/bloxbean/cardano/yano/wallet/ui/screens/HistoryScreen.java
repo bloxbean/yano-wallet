@@ -37,7 +37,17 @@ public class HistoryScreen implements Shell.Screen {
         moreButton.setOnAction(e -> loadPage(page + 1, false));
 
         VBox card = Ui.card(null, listBox, moreButton);
-        VBox column = new VBox(16, title, card);
+
+        // Explains the two rows that are NOT confirmed chain history, so neither
+        // needs to be puzzled over: what "pending" means, and why something the
+        // user submitted can end up marked failed.
+        Label note = Ui.muted("Transactions you submit appear as pending until your node's history "
+                + "confirms them. One that is still unseen after 5 minutes is marked failed and "
+                + "sorted into the list by the time it was sent — it was submitted but never "
+                + "reached the chain, which also happens when a devnet is reset.");
+        note.setWrapText(true);
+
+        VBox column = new VBox(16, title, card, note);
         column.setPadding(new Insets(24));
         column.setMaxWidth(860);
         ScrollPane scroll = new ScrollPane(column);

@@ -703,42 +703,63 @@ public class DefaultWalletUiController implements WalletUiController {
 
             // Node's confirmed history first — it is authoritative. A tx here
             // wins over a stale local pending record of the same hash.
-            List<TxItem> nodeItems = new ArrayList<>();
+            List<Dated> dated = new ArrayList<>();
             Set<String> nodeHashes = new LinkedHashSet<>();
             for (HistoryPort.TxRef tx : ports().walletTransactions(
                     profile.stakeAddress(), profile.baseAddress(), page, count, true)) {
                 nodeHashes.add(tx.txHash());
-                nodeItems.add(new TxItem(tx.txHash(), tx.blockHeight(),
+                dated.add(new Dated(tx.blockTime(), new TxItem(tx.txHash(), tx.blockHeight(),
                         TIME_FORMAT.format(Instant.ofEpochSecond(tx.blockTime())),
-                        "confirmed", null, null, explorerUrl(network, tx.txHash())));
+                        "confirmed", null, null, explorerUrl(network, tx.txHash()))));
             }
 
             List<TxItem> items = new ArrayList<>();
             if (page == 1) {
-                // Page 1: prepend local submissions the node's history can't see
-                // yet. The node's account-history (nodeHashes) is the single source
-                // of "confirmed", so a local record shows as pending until it lands
+                // Page 1 also carries local submissions the node's history cannot
+                // see yet. History (nodeHashes) is the single source of
+                // "confirmed", so a local record stays pending until it lands
                 // there — regardless of the confirmation tracker's own flag, which
-                // can run ahead of history and would otherwise make a just-submitted
-                // tx vanish until the block indexes. Once history has it, drop the
-                // local record.
+                // can run ahead of history and would otherwise make a
+                // just-submitted tx vanish until the block indexes.
+                //
+                // Only transactions still plausibly in flight are pinned above the
+                // confirmed list. One that timed out is not news any more, so it
+                // sorts into the history by the time it was submitted — otherwise
+                // a failure from days ago outranks today's transactions forever.
+                List<TxItem> inFlight = new ArrayList<>();
+                long now = System.currentTimeMillis();
                 for (PendingTransaction pending : service().pendingTransactions(
                         profile.id(), profile.networkId())) {
                     if (nodeHashes.contains(pending.txHash())) {
                         service().forgetPending(pending.txHash());
                         continue;
                     }
-                    boolean failed = "FAILED".equals(pending.status().name());
-                    items.add(new TxItem(pending.txHash(), 0,
+                    // Never seen on chain and out of time: stop calling it pending.
+                    service().expirePendingIfStale(pending.txHash(), now);
+                    boolean failed = "FAILED".equals(pending.status().name())
+                            || now - pending.createdAtEpochMillis() > WalletService.PENDING_TIMEOUT_MILLIS;
+                    TxItem item = new TxItem(pending.txHash(), 0,
                             TIME_FORMAT.format(Instant.ofEpochMilli(pending.createdAtEpochMillis())),
                             failed ? "failed" : "pending",
                             "₳ " + ada(pending.lovelace()), "sent",
-                            explorerUrl(network, pending.txHash())));
+                            explorerUrl(network, pending.txHash()));
+                    if (failed) {
+                        dated.add(new Dated(pending.createdAtEpochMillis() / 1000L, item));
+                    } else {
+                        inFlight.add(item);
+                    }
                 }
+                items.addAll(inFlight);
             }
-            items.addAll(nodeItems);
+            // Newest first, mixing timed-out local records into the confirmed list.
+            dated.sort(java.util.Comparator.comparingLong(Dated::epochSeconds).reversed());
+            dated.forEach(entry -> items.add(entry.item()));
             return items;
         });
+    }
+
+    /** A history row with the timestamp it should sort by (block time, or submission time). */
+    private record Dated(long epochSeconds, TxItem item) {
     }
 
     private static String explorerUrl(WalletNetwork network, String txHash) {

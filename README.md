@@ -29,8 +29,14 @@ Useful run flags:
 
 ```bash
 ./gradlew :wallet-app:run --args="--network=preprod --node=managed"
-./gradlew :wallet-app:run --args="--no-auto-connect"   # always show the picker
+./gradlew :wallet-app:run --args="--auto-connect"      # skip the picker and reconnect
+./gradlew :wallet-app:run --args="--data-dir=/tmp/scratch-wallet"   # isolated state
 ```
+
+Launching stops at the Connect screen with the last choice prefilled and starts
+nothing until you click — a local node can sync for a long time, so that should
+follow from a decision rather than from opening the app. `--auto-connect`
+restores the old one-click behaviour.
 
 Wallet data lives in `~/.yano-wallet/<network>/` (never point `--data-dir` at
 `/tmp` — the OS reaps it and corrupts the node database).
