@@ -6,7 +6,6 @@ import com.bloxbean.cardano.yano.wallet.ui.util.Ui;
 import javafx.geometry.Insets;
 import javafx.scene.Node;
 import javafx.scene.control.Button;
-import javafx.scene.control.Hyperlink;
 import javafx.scene.control.Label;
 import javafx.scene.control.ScrollPane;
 import javafx.scene.layout.StackPane;
@@ -93,19 +92,7 @@ public class HistoryScreen implements Shell.Screen {
     }
 
     private Node txRow(WalletUiController.TxItem tx) {
-        // Link the hash to a public explorer where one exists (mainnet/preprod/
-        // preview); on devnet/yaci-devkit there is none, so show plain text.
-        Node hash;
-        if (tx.explorerUrl() != null) {
-            Hyperlink link = new Hyperlink(Ui.middleEllipsis(tx.txHash(), 12));
-            link.getStyleClass().add("mono");
-            link.setOnAction(e -> Ui.openUrl(tx.explorerUrl()));
-            hash = link;
-        } else {
-            Label label = new Label(Ui.middleEllipsis(tx.txHash(), 12));
-            label.getStyleClass().add("mono");
-            hash = label;
-        }
+        Node hash = Ui.txHash(tx.txHash(), tx.explorerUrl(), 12);
         Label status = Ui.chip(tx.status(), DashboardScreen.statusClass(tx.status()));
         Label block = Ui.muted(tx.blockHeight() > 0 ? "block " + tx.blockHeight() : "");
         Label time = Ui.muted(tx.timeText());
