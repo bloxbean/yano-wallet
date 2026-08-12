@@ -362,8 +362,15 @@ public class Shell {
             boolean stalled = lastAdvanceMs > 0 && (now - lastAdvanceMs) > STALL_MS;
             setPill("syncing · block " + status.blockNumber() + (stalled ? " (stalled?)" : ""),
                     stalled ? "sync-bad" : "sync-warn",
-                    (stalled ? "No new blocks for a while — the node may be stuck; check the log in Settings → Advanced.\n"
-                             : "Catching up with the network…\n") + tip);
+                    (stalled
+                            // Naming the likelier cause first: the node itself is
+                            // fast (thousands of blocks/s when fed), so a stall is
+                            // usually the relay it is pulling from, and the relay
+                            // list is something the user can actually change.
+                            ? "No new blocks for a while. The relay this node syncs from may have "
+                              + "stopped delivering — try a different one, or read the node log, "
+                              + "in Settings → Managed node.\n"
+                            : "Catching up with the network…\n") + tip);
             showSyncBar(true);
         }
     }

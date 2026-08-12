@@ -137,6 +137,20 @@ class UpstreamRelaySettingsTest {
     }
 
     @Test
+    void shippedIsEmptyForExactlyTheNetworksWithNoRelaysAtAll() {
+        // The connect screen keys off shipped(), not editable(): there the user is
+        // choosing what to do next, so the mode of the connection currently in
+        // force is beside the point. This is that invariant.
+        assertThat(controller.upstreamRelays("yaci-devkit").shipped()).isEmpty();
+        assertThat(controller.upstreamRelays("devnet").shipped()).isEmpty();
+        for (String network : List.of("mainnet", "preprod", "preview")) {
+            assertThat(controller.upstreamRelays(network).shipped())
+                    .as("%s", network)
+                    .hasSizeGreaterThan(1);
+        }
+    }
+
+    @Test
     void overridesDoNotLeakBetweenNetworks() {
         controller.saveUpstreamRelays("preprod", List.of("mine.example.com:3001"), true);
 
