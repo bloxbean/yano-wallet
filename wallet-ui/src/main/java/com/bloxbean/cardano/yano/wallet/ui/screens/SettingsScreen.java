@@ -117,10 +117,12 @@ public class SettingsScreen implements Shell.Screen {
         Button refreshLog = new Button("Refresh");
         refreshLog.getStyleClass().add("ghost-button");
         refreshLog.setOnAction(e -> loadNodeLog());
-        // One Advanced card holding collapsed panes, rather than a growing stack of
-        // cards. Everything here is either diagnostic or a recovery path, so it
-        // should be findable without being in the way of ordinary use.
-        TitledPane filesPane = new TitledPane("Data directory and logs", new VBox(8,
+        // Named for what it holds rather than "Advanced", which tells the user
+        // nothing about whether their problem is in here. "Managed node" is the
+        // term the rest of the wallet already uses — a second word for the same
+        // thing would be worse than a vague one. Panes are collapsed: this is
+        // configuration and diagnostics, findable without being in the way.
+        TitledPane filesPane = new TitledPane("Node database and logs", new VBox(8,
                 Ui.muted("Data directory (wallets + node database)"),
                 dataDirLine,
                 Ui.muted("The wallet's own log is wallet.log in that directory, and the managed "
@@ -133,7 +135,7 @@ public class SettingsScreen implements Shell.Screen {
         TitledPane relaysPane = new TitledPane("Upstream relays", buildRelayEditor());
         relaysPane.setExpanded(false);
 
-        VBox advancedCard = Ui.card("Advanced", relaysPane, filesPane);
+        VBox advancedCard = Ui.card("Managed node", relaysPane, filesPane);
 
         VBox column = new VBox(16, title, appearanceCard(), nodeCard, walletCard, securityCard,
                 dappsCard, connectorCard, advancedCard);
@@ -161,9 +163,11 @@ public class SettingsScreen implements Shell.Screen {
         var view = controller.upstreamRelays(networkId);
 
         if (!view.editable()) {
-            return new VBox(8, Ui.muted("This network does not use a wallet-managed node, so there "
-                    + "are no relays to configure. A Yaci DevKit is reached over HTTP, and a Yano "
-                    + "devnet syncs from whatever node you run locally."));
+            // Say which case it is. A box that is simply absent leaves the user
+            // hunting for the setting that would have fixed their problem.
+            Label why = Ui.muted(view.unavailableReason());
+            why.setWrapText(true);
+            return new VBox(8, why);
         }
 
         Label current = Ui.muted("Currently syncing from: " + String.join(", ", view.configured()));

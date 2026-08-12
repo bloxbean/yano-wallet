@@ -110,10 +110,30 @@ class UpstreamRelaySettingsTest {
     }
 
     @Test
-    void networksWithNoManagedNodeOfferNoRelayEditor() {
-        // A control that cannot affect anything is worse than no control.
-        assertThat(controller.upstreamRelays("yaci-devkit").editable()).isFalse();
-        assertThat(controller.upstreamRelays("devnet").editable()).isFalse();
+    void networksWithNoManagedNodeOfferNoRelayEditorButSayWhy() {
+        // A control that cannot affect anything is worse than no control — and a
+        // control that is simply absent leaves the user hunting for the setting
+        // that would have fixed their problem, so each case explains itself.
+        UpstreamRelaysView devkit = controller.upstreamRelays("yaci-devkit");
+        assertThat(devkit.editable()).isFalse();
+        assertThat(devkit.unavailableReason()).contains("HTTP");
+
+        UpstreamRelaysView devnet = controller.upstreamRelays("devnet");
+        assertThat(devnet.editable()).isFalse();
+        assertThat(devnet.unavailableReason())
+                .as("a Yano devnet produces its own blocks — it syncs from nobody")
+                .contains("own blocks");
+    }
+
+    @Test
+    void aPublicNetworkIsEditableUntilYouConnectToYourOwnNode() {
+        // The bug this pins: keying only off the network offered a relay editor
+        // for preprod even when the wallet was connected to someone else's node,
+        // where it launches nothing and the setting could not possibly apply.
+        assertThat(controller.upstreamRelays("preprod").editable())
+                .as("not connected yet — the Connect screen must let dead relays be fixed first")
+                .isTrue();
+        assertThat(controller.upstreamRelays("preprod").unavailableReason()).isNull();
     }
 
     @Test

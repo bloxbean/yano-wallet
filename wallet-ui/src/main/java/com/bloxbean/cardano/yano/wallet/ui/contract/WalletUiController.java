@@ -264,15 +264,21 @@ public interface WalletUiController {
      * labelling that as active would be a confident wrong answer of exactly the
      * kind this wallet is supposed to avoid.
      *
-     * @param configured what the node will be launched with, best first
-     * @param custom     the user's own entries; empty when they have not overridden
-     * @param shipped    the built-in relays, shown so it is clear what is overridden
-     * @param onlyCustom true when the built-in relays are excluded entirely
-     * @param editable   false for networks with no managed node (external backends,
-     *                   and devnets whose upstream is whatever the user runs)
+     * <p>Relays are launch arguments for a node <em>this wallet starts</em>. When
+     * that is not what is happening, {@code editable} is false and
+     * {@code unavailableReason} says which case it is — a disabled box with no
+     * explanation invites the user to keep looking for the setting that would
+     * have fixed their problem.
+     *
+     * @param configured        what the node will be launched with, best first
+     * @param custom            the user's own entries; empty when not overridden
+     * @param shipped           the built-in relays, so it is clear what is overridden
+     * @param onlyCustom        true when the built-in relays are excluded entirely
+     * @param editable          false when the wallet is not launching the node
+     * @param unavailableReason why not, in plain words; null when editable
      */
     record UpstreamRelaysView(List<String> configured, List<String> custom, List<String> shipped,
-                              boolean onlyCustom, boolean editable) {
+                              boolean onlyCustom, boolean editable, String unavailableReason) {
     }
 
     /** The relay configuration for a network, for display and editing. */

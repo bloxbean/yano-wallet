@@ -690,17 +690,41 @@ public class DefaultWalletUiController implements WalletUiController {
     public UpstreamRelaysView upstreamRelays(String networkId) {
         WalletNetwork network = WalletNetwork.fromId(networkId);
         RelaySettingsStore store = backendManager.relaySettings();
-        // Editable only where the wallet actually launches a node with these as
-        // arguments. A Yaci DevKit has no managed node, and a Yano devnet's
-        // upstream is whatever the user is running locally — offering a relay box
-        // for either would be a control that does nothing.
-        boolean editable = !network.blockfrostFlavor() && !network.defaultRelays().isEmpty();
         return new UpstreamRelaysView(
                 store.relaysFor(network).stream().map(Object::toString).toList(),
                 store.customRelaysFor(network).stream().map(Object::toString).toList(),
                 network.defaultRelays().stream().map(Object::toString).toList(),
                 store.isOnlyCustom(network),
-                editable);
+                relaysUnavailableReason(network) == null,
+                relaysUnavailableReason(network));
+    }
+
+    /**
+     * Why this network has no relays to configure, or {@code null} when it does.
+     *
+     * <p>Relays are launch arguments for a node the wallet starts, so all three
+     * cases here are variations of "the wallet is not the one choosing". Checked
+     * in order of what the user is most likely looking at: the connection they
+     * made overrides anything the network would otherwise allow.
+     */
+    private String relaysUnavailableReason(WalletNetwork network) {
+        WalletBackendManager.ActiveConnection connection = backendManager.active();
+        if (connection != null && connection.network() == network && !connection.config().isManaged()) {
+            // Keyed off the live connection rather than the network, because a
+            // public network reached through someone's own node is exactly the
+            // case a network-only check gets wrong.
+            return "You are connected to a node you run yourself, so the wallet is not choosing "
+                    + "relays — that node's own configuration decides where it syncs from.";
+        }
+        if (network.blockfrostFlavor()) {
+            return "A Yaci DevKit is reached over HTTP and has no wallet-managed node, so there are "
+                    + "no relays to set. Change its address when you connect instead.";
+        }
+        if (network.defaultRelays().isEmpty()) {
+            return "A Yano devnet produces its own blocks rather than syncing from relays, so there "
+                    + "is no upstream to configure.";
+        }
+        return null;
     }
 
     @Override
