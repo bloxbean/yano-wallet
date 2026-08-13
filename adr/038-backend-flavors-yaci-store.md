@@ -7,6 +7,20 @@ send, lock and a Plutus unlock have been driven against a live DevKit through th
 CIP-30 connector. See *What the live DevKit actually serves* for the two routes
 this ADR's path map got wrong.
 
+**Amended by [ADR-043](043-external-backend-api-key.md) (2026-08-14)** on three
+points, all from probing hosted Blockfrost with a real key — something this ADR
+reasoned about without ever doing:
+
+- **§3's mainnet refusal no longer covers hosted Blockfrost.** It serves
+  `/genesis` with `network_magic`, so it *can* prove its network; the refusal
+  stands for yaci-store, which cannot. See ADR-043 §5.
+- **§1's probe must not test for 404.** Hosted Blockfrost answers `/status` with
+  **400** `"Invalid path"`, not 404, so a probe keyed on 404 misclassifies it as
+  Yano.
+- **The two-value flavor is now three.** Hosted Blockfrost matches *Yano* on the
+  DRep path and payload while lacking `/status` like yaci-store, so it is not
+  "the BLOCKFROST flavor with a token" — see ADR-043 §6b for the merged map.
+
 ## Date
 
 2026-07-17
@@ -84,6 +98,12 @@ Probe `GET /status` at connect time (verified live: Yano answers with
 - **`YANO`** — full features, strict magic verification, exactly as today.
 - **`BLOCKFROST`** — yaci-store (or real Blockfrost): degrade per the map below.
 
+> **Amended (ADR-043).** Treat *any* non-200 as "not Yano", not 404 specifically:
+> hosted Blockfrost answers **400** `"Invalid path"`. And this two-value split is
+> superseded by `BackendFlavor {YANO, YACI_STORE, BLOCKFROST_HOSTED}` — hosted
+> Blockfrost sits on Yano's side of the DRep split, so "not Yano" no longer
+> implies "yaci-store's paths".
+
 ### 2. Network identity — an explicit "Yaci DevKit" choice
 
 **Primary mechanism: let the user declare it.** Add **Yaci DevKit** to the
@@ -159,6 +179,17 @@ devnet reported `block_count: 0`, `first_block_time: 0`).
 
 Together with §2 this keeps the guarantee where it actually matters: real ADA is
 never reachable from a wallet whose backend cannot say what chain it is.
+
+> **Amended (ADR-043 §5).** The parenthetical above is wrong about hosted
+> Blockfrost, and was written without probing it. It *does* serve `/genesis` with
+> `network_magic` (verified 2026-08-13, preprod → magic 1), and its credential is
+> scoped to one network **by the server** — a preprod key against the mainnet
+> host is refused with "Network token mismatch". So it proves its network twice
+> over, and the rule as stated in bold admits it.
+>
+> The refusal is therefore not a property of "the BLOCKFROST flavor" but of
+> yaci-store specifically, which exposes no magic. The bolded rule is unchanged
+> and remains the safety property; only the flavor→verdict mapping moves.
 
 ### 4. Path/capability map for the BLOCKFROST flavor
 
@@ -264,3 +295,7 @@ are the same set; for a future multi-address wallet they would not be.
 - Real Blockfrost (the hosted service) also matches the BLOCKFROST flavor. That
   is not a goal, but it falls out — with the same mainnet rule applying, since
   hosted Blockfrost would fingerprint mainnet correctly.
+  **Amended (ADR-043):** it does not match the flavor cleanly — it shares Yano's
+  DRep path and yaci-store's lack of `/status` — and it needs no fingerprint,
+  having `/genesis`. It also cannot be reached at all until the wallet can send
+  a `project_id` header, which is what ADR-043 adds.
