@@ -6,12 +6,14 @@ import com.bloxbean.cardano.client.cip.cip30.CIP30DataSigner;
 import com.bloxbean.cardano.client.cip.cip30.DataSignError;
 import com.bloxbean.cardano.client.cip.cip30.DataSignature;
 import com.bloxbean.cardano.client.common.cbor.CborSerializationUtil;
+import com.bloxbean.cardano.client.transaction.TransactionSigner;
 import com.bloxbean.cardano.client.transaction.spec.Transaction;
 import com.bloxbean.cardano.client.transaction.spec.TransactionBody;
 import com.bloxbean.cardano.client.transaction.spec.TransactionWitnessSet;
 import com.bloxbean.cardano.client.transaction.spec.VkeyWitness;
 import com.bloxbean.cardano.client.transaction.spec.Withdrawal;
 import com.bloxbean.cardano.client.transaction.spec.cert.Certificate;
+import com.bloxbean.cardano.client.transaction.util.TransactionUtil;
 import com.bloxbean.cardano.client.util.HexUtil;
 
 import java.util.ArrayList;
@@ -38,9 +40,10 @@ public final class DappSigner {
     }
 
     public static String witnessSetHex(Account account, String txHex, boolean partialSign) {
+        byte[] txBytes = HexUtil.decodeHexString(txHex);
         Transaction tx;
         try {
-            tx = Transaction.deserialize(HexUtil.decodeHexString(txHex));
+            tx = Transaction.deserialize(txBytes);
         } catch (Exception e) {
             throw new IllegalArgumentException("Invalid transaction CBOR: " + e.getMessage());
         }
@@ -49,10 +52,42 @@ public final class DappSigner {
         // return only the ones WE add.
         Set<String> preexisting = vkeyHexes(tx);
 
-        Transaction signed = account.sign(tx); // payment key — authorizes the wallet's inputs
-        TransactionBody body = tx.getBody();
-        if (needsStakeKey(account, body)) {
-            signed = account.signWithStakeKey(signed);
+        // Sign the ORIGINAL bytes, never a re-encoding of them.
+        //
+        // account.sign(Transaction) serialises the object back to CBOR and hashes
+        // that, which is only correct while a round-trip is byte-exact — and it is
+        // not. A dApp datum carrying an indefinite-length map (`bf … ff`) comes back
+        // from cardano-client-lib as a definite-length one (`a3 …`), one byte
+        // shorter, so the body hash changes and every signature over it is invalid.
+        // A CIP-113 registration hit exactly this on 2026-08-13: the node answered
+        // InvalidSignaturesInWitnesses and the dApp reported only "sign and submit
+        // failed". The setup transaction in the same flow happened to round-trip
+        // cleanly and went through, which is what made it look like a problem with
+        // the second transaction rather than with signing.
+        //
+        // TransactionSigner.sign(byte[], …) takes the body slice out of the bytes it
+        // was handed, hashes that, and splices the witness in without touching the
+        // body — so whatever the dApp encoded is what gets signed.
+        byte[] signedBytes = TransactionSigner.INSTANCE.sign(txBytes, account.hdKeyPair());
+        if (needsStakeKey(account, tx.getBody())) {
+            signedBytes = TransactionSigner.INSTANCE.sign(signedBytes, account.stakeHdKeyPair());
+        }
+
+        // The body must be identical to what we were given. This cannot fail with
+        // the signer above; it is here because when it DID fail the symptom was a
+        // node-side rejection a user could not act on, and the hardware path has
+        // carried the same gate since it was written.
+        String originalHash = TransactionUtil.getTxHash(txBytes);
+        if (!originalHash.equals(TransactionUtil.getTxHash(signedBytes))) {
+            throw new IllegalStateException("Refusing to sign: signing changed the transaction's"
+                    + " encoding, so the signature would not match what the dApp submits.");
+        }
+
+        Transaction signed;
+        try {
+            signed = Transaction.deserialize(signedBytes);
+        } catch (Exception e) {
+            throw new IllegalStateException("Could not read back the signed transaction: " + e.getMessage());
         }
 
         List<VkeyWitness> added = new ArrayList<>();
