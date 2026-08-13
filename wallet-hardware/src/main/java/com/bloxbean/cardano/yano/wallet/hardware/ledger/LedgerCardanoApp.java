@@ -258,6 +258,14 @@ public final class LedgerCardanoApp {
      * {@code txHashHex} MUST equal the host's blake2b-256 of the tx body — that
      * equality is the correctness gate.
      *
+     * <p><b>This stage order is load-bearing.</b> The device is a state machine
+     * and answers {@code 0x6E06} if a stage arrives early — reordering it broke
+     * delegation on real hardware, with the device rejecting certificates that
+     * had been moved ahead of fee and ttl. Verify against the CALL SEQUENCE in
+     * ledgerjs {@code interactions/v7/signTx.ts} (the generator body), not the
+     * order its stage constants happen to be declared in: those differ, and
+     * reading the declarations is exactly how this got broken once.
+     *
      * @param signingPaths  BIP32 paths to witness (payment for inputs, stake for
      *                      certs/withdrawals)
      * @param certificates  pre-serialized certificate payloads (see the cert* helpers)
