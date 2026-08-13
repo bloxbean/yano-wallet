@@ -17,6 +17,9 @@ import java.util.List;
  */
 public final class LedgerCardanoApp {
 
+    private static final org.slf4j.Logger log =
+            org.slf4j.LoggerFactory.getLogger(LedgerCardanoApp.class);
+
     /** Class byte of the Cardano app. */
     public static final int CLA = 0xD7;
 
@@ -304,6 +307,12 @@ public final class LedgerCardanoApp {
      * the host's CBOR exactly, the hashes differ and the caller must not submit.
      */
     public LedgerSignedTx signTransaction(LedgerSignRequest r) {
+        log.info("Ledger signTx: mode={} inputs={} outputs={} certs={} withdrawals={} mint={}"
+                        + " collateral={} requiredSigners={} refInputs={} signingPaths={}",
+                r.signingMode(), r.inputs().size(), r.outputs().size(), r.certificates().size(),
+                r.withdrawals().size(), r.mint() == null ? 0 : r.mint().size(),
+                r.collateralInputs().size(), r.requiredSigners().size(),
+                r.referenceInputs().size(), r.signingPaths().size());
         exchangeStage(STAGE_INIT, 0x00, serializeTxInit(r));
 
         // Modern apps take auxiliary data before the body.
@@ -699,9 +708,46 @@ public final class LedgerCardanoApp {
     private byte[] exchangeStage(int p1, int p2, byte[] data) {
         ApduResponse response = transport.exchange(new ApduCommand(CLA, INS_SIGN_TX, p1, p2, data));
         if (!response.isOk()) {
-            throw new HardwareWalletException(describeStatus(response.statusWord()));
+            // Name the stage. The device is streamed a transaction in ~20 stages
+            // and stops at the first it dislikes, so WHICH one failed is the whole
+            // diagnosis — without it, a rejection is a status word and a shrug, and
+            // the only way to find the offending field is to sign progressively
+            // richer transactions on real hardware until one breaks.
+            log.warn("Ledger rejected signTx stage {} (0x{}) with status 0x{}: {} bytes sent",
+                    stageName(p1), String.format("%02x", p1),
+                    String.format("%04x", response.statusWord() & 0xFFFF), data.length);
+            throw new HardwareWalletException(describeStatus(response.statusWord())
+                    + " [stage: " + stageName(p1) + "]");
         }
         return response.data();
+    }
+
+    /** Human name for a signTx P1 stage, for errors and logs. */
+    static String stageName(int p1) {
+        return switch (p1) {
+            case STAGE_INIT -> "init";
+            case STAGE_INPUTS -> "inputs";
+            case STAGE_OUTPUTS -> "outputs";
+            case STAGE_FEE -> "fee";
+            case STAGE_TTL -> "ttl";
+            case STAGE_CERTIFICATES -> "certificates";
+            case STAGE_WITHDRAWALS -> "withdrawals";
+            case STAGE_AUX_DATA -> "auxiliary data";
+            case STAGE_VALIDITY_INTERVAL_START -> "validity interval start";
+            case STAGE_MINT -> "mint";
+            case STAGE_SCRIPT_DATA_HASH -> "script data hash";
+            case STAGE_COLLATERAL_INPUTS -> "collateral inputs";
+            case STAGE_REQUIRED_SIGNERS -> "required signers";
+            case STAGE_COLLATERAL_OUTPUT -> "collateral output";
+            case STAGE_TOTAL_COLLATERAL -> "total collateral";
+            case STAGE_REFERENCE_INPUTS -> "reference inputs";
+            case STAGE_VOTING_PROCEDURES -> "voting procedures";
+            case STAGE_TREASURY -> "treasury";
+            case STAGE_DONATION -> "donation";
+            case STAGE_CONFIRM -> "confirm";
+            case STAGE_WITNESSES -> "witnesses";
+            default -> "unknown(0x" + String.format("%02x", p1) + ")";
+        };
     }
 
     /** INIT payload for an ordinary tx with no certs/withdrawals/mint/collateral (Conway-aware app). */
