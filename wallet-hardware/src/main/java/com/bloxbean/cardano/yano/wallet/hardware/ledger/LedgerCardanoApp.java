@@ -307,6 +307,23 @@ public final class LedgerCardanoApp {
         exchangeStage(STAGE_INIT, 0x00, serializeTxInit(r));
 
         // Modern apps take auxiliary data before the body.
+
+        for (LedgerTxInput input : r.inputs()) {
+            exchangeStage(STAGE_INPUTS, 0x00, serializeTxInput(input));
+        }
+        for (LedgerTxOutput output : r.outputs()) {
+            streamOutput(STAGE_OUTPUTS, output, r.outputFormat());
+        }
+        for (byte[] cert : r.certificates()) {
+            exchangeStage(STAGE_CERTIFICATES, 0x00, cert);
+        }
+        for (byte[] wd : r.withdrawals()) {
+            exchangeStage(STAGE_WITHDRAWALS, 0x00, wd);
+        }
+        exchangeStage(STAGE_FEE, 0x00, serializeCoin(r.fee()));
+        if (r.ttl() != null) {
+            exchangeStage(STAGE_TTL, 0x00, uint64(BigInteger.valueOf(r.ttl())));
+        }
         if (r.auxiliaryDataHash() != null) {
             if (r.auxiliaryDataHash().length != 32) {
                 throw new HardwareWalletException("auxiliaryDataHash must be 32 bytes");
@@ -315,23 +332,6 @@ public final class LedgerCardanoApp {
             auxPayload[0] = (byte) AUX_DATA_ARBITRARY_HASH;
             System.arraycopy(r.auxiliaryDataHash(), 0, auxPayload, 1, 32);
             exchangeStage(STAGE_AUX_DATA, 0x00, auxPayload);
-        }
-
-        for (LedgerTxInput input : r.inputs()) {
-            exchangeStage(STAGE_INPUTS, 0x00, serializeTxInput(input));
-        }
-        for (LedgerTxOutput output : r.outputs()) {
-            streamOutput(STAGE_OUTPUTS, output, r.outputFormat());
-        }
-        exchangeStage(STAGE_FEE, 0x00, serializeCoin(r.fee()));
-        if (r.ttl() != null) {
-            exchangeStage(STAGE_TTL, 0x00, uint64(BigInteger.valueOf(r.ttl())));
-        }
-        for (byte[] cert : r.certificates()) {
-            exchangeStage(STAGE_CERTIFICATES, 0x00, cert);
-        }
-        for (byte[] wd : r.withdrawals()) {
-            exchangeStage(STAGE_WITHDRAWALS, 0x00, wd);
         }
         if (r.validityIntervalStart() != null) {
             exchangeStage(STAGE_VALIDITY_INTERVAL_START, 0x00,
