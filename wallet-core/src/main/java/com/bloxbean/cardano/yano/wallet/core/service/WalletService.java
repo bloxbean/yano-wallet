@@ -7,6 +7,7 @@ import com.bloxbean.cardano.client.api.model.Amount;
 import com.bloxbean.cardano.client.api.model.Result;
 import com.bloxbean.cardano.client.util.HexUtil;
 import com.bloxbean.cardano.yano.wallet.core.tx.PendingTransaction;
+import com.bloxbean.cardano.yano.wallet.core.tx.PendingTransactionStatus;
 import com.bloxbean.cardano.yano.wallet.core.tx.PendingTransactionStore;
 import com.bloxbean.cardano.yano.wallet.core.tx.QuickAdaTxDraft;
 import com.bloxbean.cardano.yano.wallet.core.tx.QuickAdaTxService;
@@ -128,6 +129,40 @@ public class WalletService {
     /** Drops a local pending record — call once the node's history confirms it. */
     public void forgetPending(String txHash) {
         pendingStore.remove(txHash);
+    }
+
+    /**
+     * How long a submitted transaction may stay unseen on chain before the wallet
+     * stops calling it pending. Generous next to a ~20s Cardano block, because
+     * saying "failed" about a transaction that later lands would be worse than
+     * waiting: the record is the user's only evidence it was ever sent.
+     */
+    public static final long PENDING_TIMEOUT_MILLIS = 5 * 60 * 1000L;
+
+    /**
+     * Marks a submitted-but-never-seen transaction as failed once
+     * {@link #PENDING_TIMEOUT_MILLIS} has passed.
+     *
+     * <p>Without this a record can never leave the pending state: the only other
+     * exit is the node's history containing its hash, so a transaction that was
+     * rejected after submission, or that belonged to a devnet which has since
+     * been reset, sits at the top of Recent Activity forever claiming to be in
+     * flight.
+     *
+     * <p>Marked, not deleted — a transaction the user submitted and that did not
+     * arrive is exactly the thing they should still be able to see.
+     *
+     * @return true if this call expired the record
+     */
+    public boolean expirePendingIfStale(String txHash, long nowEpochMillis) {
+        return pendingStore.find(txHash)
+                .filter(pending -> pending.isStale(nowEpochMillis, PENDING_TIMEOUT_MILLIS))
+                .map(pending -> {
+                    pendingStore.save(pending.markFailed(
+                            "Not seen on chain within " + (PENDING_TIMEOUT_MILLIS / 60000) + " minutes"));
+                    return true;
+                })
+                .orElse(false);
     }
 
     /**

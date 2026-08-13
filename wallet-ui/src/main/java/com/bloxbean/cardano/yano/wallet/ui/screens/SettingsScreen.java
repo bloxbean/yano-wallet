@@ -18,6 +18,8 @@ import javafx.scene.control.RadioButton;
 import javafx.scene.control.ScrollPane;
 import javafx.scene.control.TextArea;
 import javafx.scene.control.ToggleGroup;
+import javafx.scene.layout.HBox;
+import javafx.scene.control.TextField;
 import javafx.scene.layout.StackPane;
 import javafx.scene.layout.VBox;
 
@@ -90,7 +92,8 @@ public class SettingsScreen implements Shell.Screen {
                 Ui.muted("Registers the secure Native Messaging transport with your browser: Chrome "
                         + "verifies the Yano extension's identity and launches the connector on demand, "
                         + "replacing the localhost WebSocket. Restart the browser afterwards."),
-                installHost);
+                installHost,
+                buildTransportChooser());
 
         securityLine.setWrapText(true);
         VBox securityCard = Ui.card("Security key (optional)",
@@ -113,6 +116,8 @@ public class SettingsScreen implements Shell.Screen {
         VBox advancedCard = Ui.card("Advanced",
                 Ui.muted("Data directory (wallets + node database)"),
                 dataDirLine,
+                Ui.muted("The wallet's own log is wallet.log in that directory, and the managed "
+                        + "node's is <network>/node/node.log — attach both when reporting a problem."),
                 Ui.muted("Managed node log (last 100 lines)"),
                 refreshLog,
                 nodeLog);
@@ -125,6 +130,71 @@ public class SettingsScreen implements Shell.Screen {
         scroll.setFitToWidth(true);
         scroll.getStyleClass().add("screen-scroll");
         return scroll;
+    }
+
+    /**
+     * Transport chooser (ADR-035). Native Messaging is the default and the only
+     * one that can identify its caller — the browser vouches for the extension's
+     * pinned id. The localhost WebSocket accepts a self-asserted origin, so any
+     * local program can pose as a dApp.
+     *
+     * <p>It is offered anyway because Native Messaging can fail to install for
+     * reasons a user cannot fix from inside the wallet, and a wallet that cannot
+     * reach dApps at all is worse than one on a weaker transport the user chose
+     * deliberately. The wording keeps saying WHY it is weaker, so the choice does
+     * not quietly become the norm.
+     */
+    private Node buildTransportChooser() {
+        var current = controller.connectorSettings();
+
+        ToggleGroup group = new ToggleGroup();
+        RadioButton nativeMessaging = new RadioButton("Native Messaging (recommended)");
+        nativeMessaging.setToggleGroup(group);
+        RadioButton webSocket = new RadioButton("Localhost WebSocket — only if Native Messaging will not work");
+        webSocket.setToggleGroup(group);
+        nativeMessaging.setSelected(!current.weak());
+        webSocket.setSelected(current.weak());
+
+        TextField portField = new TextField(String.valueOf(current.wsPort()));
+        portField.setPrefColumnCount(6);
+        HBox portRow = Ui.row(8, Ui.muted("Port"), portField);
+        portRow.disableProperty().bind(webSocket.selectedProperty().not());
+
+        Label why = Ui.muted("Over the WebSocket the calling page's identity is self-asserted, so any "
+                + "program running on this computer can present itself as a dApp. Native Messaging has "
+                + "the browser vouch for the extension instead. Every signature is still approved by you.");
+        why.setWrapText(true);
+
+        Label status = Ui.muted("");
+        status.setWrapText(true);
+
+        Button apply = new Button("Apply");
+        apply.getStyleClass().add("ghost-button");
+        apply.setOnAction(e -> {
+            int port;
+            try {
+                port = Integer.parseInt(portField.getText().trim());
+            } catch (NumberFormatException ex) {
+                status.setText("Port must be a number between 1 and 65535.");
+                return;
+            }
+            apply.setDisable(true);
+            status.setText("Restarting the connector…");
+            Ui.onFx(controller.setConnectorTransport(
+                            webSocket.isSelected() ? "WEBSOCKET" : "NATIVE_MESSAGING", port),
+                    message -> {
+                        apply.setDisable(false);
+                        status.setText(message);
+                        Ui.toast(overlay, message, webSocket.isSelected());
+                    },
+                    error -> {
+                        apply.setDisable(false);
+                        status.setText("Could not switch transport: " + error.getMessage());
+                    });
+        });
+
+        return new VBox(8, Ui.muted("How the browser reaches this wallet"),
+                nativeMessaging, webSocket, portRow, why, apply, status);
     }
 
     /**
@@ -173,7 +243,8 @@ public class SettingsScreen implements Shell.Screen {
 
     @Override
     public void refresh() {
-        nodeLine.setText(controller.nodeBaseUrl() + "  ·  " + controller.networkId());
+        nodeLine.setText(controller.nodeBaseUrl() + "  ·  "
+                + controller.networkLabel(controller.networkId()));
         WalletUiController.WalletItem wallet = controller.activeWallet();
         if (wallet != null) {
             walletLine.setText(wallet.name() + "  ·  account #" + wallet.accountIndex()

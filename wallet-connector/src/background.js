@@ -194,16 +194,45 @@ function send(sock, req) {
   });
 }
 
+// Show the active transport on the toolbar icon.
+//
+// The popup already names it, but that needs a click. The legacy WebSocket
+// accepts a self-asserted origin — any local program can pose as a dApp — so
+// which transport is live is worth seeing without asking. Native Messaging, the
+// safe default, shows nothing: a badge that is always on teaches people to
+// ignore it.
+function showTransport(kind) {
+  try {
+    if (!chrome.action || !chrome.action.setBadgeText) return;
+    if (kind === 'ws') {
+      chrome.action.setBadgeText({ text: 'WS' });
+      chrome.action.setBadgeBackgroundColor({ color: '#b45309' });
+      chrome.action.setTitle({
+        title: 'Yano Wallet Connector — legacy WebSocket.\n'
+          + 'Any program on this computer can reach this port and the page origin is '
+          + 'self-asserted. Prefer Native Messaging (wallet: Settings -> Browser connector).'
+      });
+    } else {
+      chrome.action.setBadgeText({ text: '' });
+      chrome.action.setTitle({ title: 'Yano Wallet Connector — Native Messaging' });
+    }
+  } catch (_) {
+    // A badge must never break a transaction.
+  }
+}
+
 // Relay one request over the best available transport: Native Messaging first,
 // the legacy WebSocket second. Both speak the same {id,method,params,origin}
 // envelope, so callers can't tell which carried their message.
 async function relay(req) {
   try {
     const port = await connectNative();
+    showTransport('native');
     return await sendNative(port, req);
   } catch (nativeError) {
     try {
       const sock = await connect();
+      showTransport('ws');
       return await send(sock, req);
     } catch (wsError) {
       throw new Error('Yano wallet is not reachable — is it running and unlocked? ('
@@ -219,10 +248,12 @@ async function relay(req) {
 async function probeReachability() {
   try {
     await connectNative();
+    showTransport('native');
     return { ok: true, transport: 'native' };
   } catch (nativeError) {
     try {
       await connect();
+      showTransport('ws');
       return { ok: true, transport: 'ws' };
     } catch (wsError) {
       return { ok: false, error: wsError && wsError.message ? wsError.message : String(wsError) };

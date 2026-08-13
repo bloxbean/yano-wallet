@@ -6,7 +6,6 @@ import com.bloxbean.cardano.yano.wallet.ui.util.Ui;
 import javafx.geometry.Insets;
 import javafx.scene.Node;
 import javafx.scene.control.Button;
-import javafx.scene.control.Hyperlink;
 import javafx.scene.control.Label;
 import javafx.scene.control.ScrollPane;
 import javafx.scene.layout.StackPane;
@@ -37,7 +36,17 @@ public class HistoryScreen implements Shell.Screen {
         moreButton.setOnAction(e -> loadPage(page + 1, false));
 
         VBox card = Ui.card(null, listBox, moreButton);
-        VBox column = new VBox(16, title, card);
+
+        // Explains the two rows that are NOT confirmed chain history, so neither
+        // needs to be puzzled over: what "pending" means, and why something the
+        // user submitted can end up marked failed.
+        Label note = Ui.muted("Transactions you submit appear as pending until your node's history "
+                + "confirms them. One that is still unseen after 5 minutes is marked failed and "
+                + "sorted into the list by the time it was sent — it was submitted but never "
+                + "reached the chain, which also happens when a devnet is reset.");
+        note.setWrapText(true);
+
+        VBox column = new VBox(16, title, card, note);
         column.setPadding(new Insets(24));
         column.setMaxWidth(860);
         ScrollPane scroll = new ScrollPane(column);
@@ -83,19 +92,7 @@ public class HistoryScreen implements Shell.Screen {
     }
 
     private Node txRow(WalletUiController.TxItem tx) {
-        // Link the hash to a public explorer where one exists (mainnet/preprod/
-        // preview); on devnet/yaci-devkit there is none, so show plain text.
-        Node hash;
-        if (tx.explorerUrl() != null) {
-            Hyperlink link = new Hyperlink(Ui.middleEllipsis(tx.txHash(), 12));
-            link.getStyleClass().add("mono");
-            link.setOnAction(e -> Ui.openUrl(tx.explorerUrl()));
-            hash = link;
-        } else {
-            Label label = new Label(Ui.middleEllipsis(tx.txHash(), 12));
-            label.getStyleClass().add("mono");
-            hash = label;
-        }
+        Node hash = Ui.txHash(tx.txHash(), tx.explorerUrl(), 12);
         Label status = Ui.chip(tx.status(), DashboardScreen.statusClass(tx.status()));
         Label block = Ui.muted(tx.blockHeight() > 0 ? "block " + tx.blockHeight() : "");
         Label time = Ui.muted(tx.timeText());

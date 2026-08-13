@@ -20,6 +20,7 @@ import java.net.http.HttpResponse;
 import java.time.Duration;
 import java.util.ArrayList;
 import java.util.List;
+import java.util.HexFormat;
 import java.util.Locale;
 import java.util.Objects;
 
@@ -434,23 +435,37 @@ public class YanoNodeClient {
     // the client and never retry.
     // ------------------------------------------------------------------
 
-    /** An all-zero output reference, used to probe whether the route exists at all. */
+    /** An all-zero transaction hash, used to probe whether the route exists at all. */
     private static final String PROBE_TX_HASH =
             "0000000000000000000000000000000000000000000000000000000000000000";
 
     /**
-     * Resolves an output reference via {@code GET /utxos/{txHash}/{index}}.
+     * Resolves an output reference via {@code GET /txs/{txHash}/utxos} — the same
+     * route cardano-client-lib's {@code UtxoService.getTxOutput} uses.
      *
-     * <p>Returns {@code null} when the node positively reports the output is not
-     * in its UTxO set — already spent, or not yet on-chain. That is an answer, so
-     * it is not an exception. Anything else (node unreachable, 5xx, a node that
-     * does not serve this route) throws {@link TxSimulationException}, because the
-     * caller must not mistake "could not ask" for "not yours".
+     * <p>This is the Blockfrost-standard route, and it is deliberately the one
+     * this calls. Blockfrost defines no top-level {@code /utxos} resource at all,
+     * so {@code /utxos/{txHash}/{index}} — which this used to call — is a Yano and
+     * yaci-store extension. Worse, the two spell its response differently
+     * ({@code address}/{@code amount} against {@code owner_addr}/{@code amounts}),
+     * while on this route they agree, field for field, with each other and with
+     * Blockfrost. A wallet pointed at any Blockfrost-compatible backend therefore
+     * resolves inputs the same way, with one parser.
      *
-     * <p>Note this is deliberately NOT cardano-client-lib's {@code
-     * UtxoService.getTxOutput}: that resolves through {@code /txs/{hash}/utxos},
-     * which answers a different question (historical outputs of an on-chain
-     * transaction) than the unspent-only set this needs.
+     * <p>Returns {@code null} when the node positively reports it cannot name this
+     * output — the creating transaction is not on-chain, or it has no output at
+     * this index. That is an answer, so it is not an exception. Anything else
+     * (node unreachable, 5xx, a node that does not serve this route) throws
+     * {@link TxSimulationException}, because the caller must not mistake "could
+     * not ask" for "not yours".
+     *
+     * <p>Note this answers a subtly different question than the route it replaced.
+     * That one reported only <em>unspent</em> outputs, so an input already spent
+     * came back unresolved; here it resolves and its value is counted. The amounts
+     * are identical either way — a transaction spending an already-spent input
+     * cannot succeed whatever we show — so the trade is fewer summaries falsely
+     * marked incomplete, against an "this input is already spent" signal the
+     * wallet never read.
      */
     public ResolvedOutput getUtxo(String txHash, int index) {
         // The hash arrives from dApp-supplied CBOR. Anything but a real tx hash is
@@ -463,23 +478,29 @@ public class YanoNodeClient {
         if (index < 0) {
             throw new IllegalArgumentException("index must not be negative");
         }
-        RawResponse response = getRaw("utxos/" + txHash + "/" + index, simulationTimeout());
+        RawResponse response = getRaw("txs/" + txHash + "/utxos", simulationTimeout());
         if (response.status() == 404) {
-            // A route that exists answers a miss with an EMPTY body; a node that
-            // does not serve this route answers with an error page. Distinguishing
-            // them is what stops "your node is too old" being reported as "this
-            // input is not yours".
-            if (response.isEmptyBody()) {
+            // Both backends report an unknown transaction with a JSON body — a Yano
+            // node {"error":"Transaction not found"}, yaci-store the RFC 7807
+            // equivalent — while a server with no such route answers with an error
+            // page. Distinguishing them is what stops "your node is too old" being
+            // reported as "this input is not yours".
+            if (!response.looksLikeMissingRoute()) {
                 return null;
             }
-            throw new TxSimulationException("This node does not serve /utxos/{txHash}/{index}");
+            throw new TxSimulationException("This node does not serve /txs/{txHash}/utxos");
         }
         if (response.status() != 200) {
             throw new TxSimulationException(
                     "Could not resolve " + txHash + "#" + index + " (node returned " + response.status() + ")");
         }
         try {
-            return toResolvedOutput(objectMapper.readTree(response.body()));
+            JsonNode outputs = objectMapper.readTree(response.body()).path("outputs");
+            if (!outputs.isArray()) {
+                throw new TxSimulationException("Node returned no output list for " + txHash);
+            }
+            JsonNode requested = selectByOutputIndex(outputs, index);
+            return requested == null ? null : toResolvedOutput(requested);
         } catch (TxSimulationException e) {
             throw e;
         } catch (IOException | RuntimeException e) {
@@ -488,6 +509,28 @@ public class YanoNodeClient {
             // degrade" path catches it instead of taking an uncontracted crash.
             throw new TxSimulationException("Unreadable response for " + txHash + "#" + index, e);
         }
+    }
+
+    /**
+     * Picks the requested output by the {@code output_index} it declares, never by
+     * its position in the array. Nothing promises the list is ordered or complete,
+     * and taking {@code outputs[index]} on a list that is neither would resolve a
+     * DIFFERENT output — another address, another value — while still reporting the
+     * summary as complete. So an entry that does not declare its index is refused
+     * rather than counted, and a list with no entry at that index resolves to
+     * {@code null}: unresolved, which degrades the summary, rather than wrong.
+     */
+    private static JsonNode selectByOutputIndex(JsonNode outputs, int index) {
+        for (JsonNode output : outputs) {
+            JsonNode declared = output.path("output_index");
+            if (!declared.isIntegralNumber()) {
+                throw new TxSimulationException("Node returned an output with no output_index");
+            }
+            if (declared.asInt() == index) {
+                return output;
+            }
+        }
+        return null;   // this transaction has no output at that index
     }
 
     /**
@@ -502,6 +545,13 @@ public class YanoNodeClient {
         if (utxo == null || !utxo.isObject()) {
             throw new TxSimulationException("Node returned a non-object UTxO response");
         }
+        // One spelling, because {@link #getUtxo} reads only the Blockfrost-standard
+        // route, where a Yano node, yaci-store and Blockfrost itself all name these
+        // "address" and "amount". The non-standard /utxos/{hash}/{index} route needed
+        // "owner_addr"/"amounts" tolerated alongside them; reading only Blockfrost's
+        // names there made every input on a DevKit fail to resolve, which surfaced
+        // as "the effect cannot be computed". Standardising on the shared route is
+        // what retires that fallback rather than a bet that it is now unnecessary.
         String address = utxo.path("address").asText(null);
         if (!notBlank(address)) {
             throw new TxSimulationException("Node returned a UTxO with no address");
@@ -583,7 +633,7 @@ public class YanoNodeClient {
         }
         RawResponse response;
         try {
-            response = postRaw("utils/txs/evaluate", txHex, "text/plain", simulationTimeout());
+            response = postEvaluate(txHex);
         } catch (RuntimeException e) {
             return ScriptEvaluation.unavailable("Could not reach the node to evaluate scripts");
         }
@@ -667,6 +717,35 @@ public class YanoNodeClient {
             "Cannot resolve SlotConfig zeroTime",
             "Protocol version not found or invalid in");
 
+    /**
+     * Posts a transaction for evaluation as {@code application/cbor}.
+     *
+     * <p>Both backends accept CBOR bytes; only a Yano node also accepts hex as
+     * {@code text/plain}, and yaci-store rejects that with 415 — which the probe
+     * then read as "cannot evaluate". Sending bytes is the one form that works
+     * everywhere.
+     */
+    private RawResponse postEvaluate(String txHex) {
+        // The hex string as the body, under application/cbor. That combination is
+        // the only one both backends accept: yaci-store's controller binds the
+        // body as a String and rejects text/plain with 415, while a Yano node
+        // declares application/cbor but detects an ASCII-hex payload and decodes
+        // it (EvaluationResource.normalizeCborPayload).
+        URI uri = baseUri.resolve("utils/txs/evaluate");
+        HttpRequest request = HttpRequest.newBuilder(uri)
+                .timeout(simulationTimeout())
+                .header("Content-Type", "application/cbor")
+                .header("Accept", "application/json")
+                .POST(HttpRequest.BodyPublishers.ofString(normaliseHexOrThrow(txHex)))
+                .build();
+        return send(request, uri, simulationTimeout());
+    }
+
+    private static String normaliseHexOrThrow(String hex) {
+        String trimmed = hex == null ? "" : hex.strip();
+        return trimmed.startsWith("0x") ? trimmed.substring(2) : trimmed;
+    }
+
     private static boolean isEvaluatorUnavailable(String message) {
         if (message == null) {
             return false;
@@ -693,8 +772,8 @@ public class YanoNodeClient {
         SimulationCapabilities.Support utxoLookup;
         String detail = null;
         try {
-            RawResponse probe = getRaw("utxos/" + PROBE_TX_HASH + "/0", simulationTimeout());
-            if (probe.status() == 200 || (probe.status() == 404 && probe.isEmptyBody())) {
+            RawResponse probe = getRaw("txs/" + PROBE_TX_HASH + "/utxos", simulationTimeout());
+            if (probe.status() == 200 || (probe.status() == 404 && !probe.looksLikeMissingRoute())) {
                 utxoLookup = SimulationCapabilities.Support.AVAILABLE;
             } else if (probe.status() == 404) {
                 utxoLookup = SimulationCapabilities.Support.UNAVAILABLE;
@@ -715,11 +794,16 @@ public class YanoNodeClient {
             // it, with no side effects on the node. Sent raw rather than through
             // evaluateTx() so an unreachable node stays distinguishable from one
             // that answered "I cannot evaluate".
-            RawResponse probe = postRaw("utils/txs/evaluate", "00", "text/plain", simulationTimeout());
-            if (probe.status() == 404) {
+            RawResponse probe = postEvaluate("00");
+            if (probe.status() == 404 || probe.status() == 405) {
                 scriptEvaluation = SimulationCapabilities.Support.UNAVAILABLE;
             } else if (probe.status() != 200) {
-                scriptEvaluation = SimulationCapabilities.Support.UNKNOWN;
+                // Deliberate garbage was rejected by something that exists. A
+                // backend may report that as 4xx/5xx rather than an Ogmios
+                // envelope (yaci-store answers 500) — either way the route is
+                // there, and whether a REAL evaluation succeeds is decided per
+                // transaction, where a failure degrades to "could not verify".
+                scriptEvaluation = SimulationCapabilities.Support.AVAILABLE;
             } else {
                 ScriptEvaluation parsed = parseEvaluation(probe.body());
                 // A deserialization complaint means the evaluator ran and rejected
@@ -773,10 +857,29 @@ public class YanoNodeClient {
 
     private static final Duration SIMULATION_TIMEOUT = Duration.ofSeconds(2);
 
-    /** Status + body, so callers can tell an empty-bodied 404 from an error page. */
-    private record RawResponse(int status, String body) {
+    /** Status, body and content type, so a 404 can be classified by its shape. */
+    private record RawResponse(int status, String body, String contentType) {
         boolean isEmptyBody() {
             return body == null || body.isBlank();
+        }
+
+        /**
+         * True when this looks like a server's generic "no such route" page
+         * rather than a handler's considered answer.
+         *
+         * <p>Backends disagree about how a route reports a miss: a Yano node
+         * answers 404 with an EMPTY body, while yaci-store answers 404 with an
+         * RFC 7807 {@code application/problem+json} document. Both mean "the
+         * route exists and the thing is not there". Only an HTML error page
+         * means the route itself is absent.
+         */
+        boolean looksLikeMissingRoute() {
+            String type = contentType == null ? "" : contentType.toLowerCase(Locale.ROOT);
+            if (type.contains("html")) {
+                return true;
+            }
+            String trimmed = body == null ? "" : body.trim();
+            return trimmed.startsWith("<");
         }
     }
 
@@ -816,7 +919,8 @@ public class YanoNodeClient {
         try {
             HttpResponse<String> response = exchange.get(timeout.toMillis(),
                     java.util.concurrent.TimeUnit.MILLISECONDS);
-            return new RawResponse(response.statusCode(), response.body());
+            return new RawResponse(response.statusCode(), response.body(),
+                    response.headers().firstValue("content-type").orElse(null));
         } catch (java.util.concurrent.TimeoutException e) {
             exchange.cancel(true);
             throw new TxSimulationException("Yano node at " + uri + " did not answer within "

@@ -25,7 +25,7 @@ test {
     useJUnitPlatform()
     // Opt-in live-node tests (ADR-042 SIM-M0/SIM-M5) read this; Gradle does not
     // forward -D to the test JVM on its own. Absent → those tests stay skipped.
-    ['yano.live.node'].each { key ->
+    ['yano.live.node', 'yano.live.outref'].each { key ->
         if (System.getProperty(key)) {
             systemProperty key, System.getProperty(key)
         }

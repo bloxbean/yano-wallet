@@ -235,6 +235,16 @@
    weight rather than inheriting body text. */
 .approval-warning { -fx-text-fill: -warn-text; -fx-font-weight: 600; }
 .approval-card { -fx-border-color: derive(-accent, -20%); }
+/* The signing prompt scrolls inside the modal card. A ScrollPane paints its own
+   background and border by default, which drew a second frame just inside the
+   card's — so it is made invisible and the card keeps the only border. */
+.modal-scroll,
+.modal-scroll > .viewport { -fx-background-color: transparent; }
+.modal-scroll {
+    -fx-background-insets: 0;
+    -fx-padding: 0;
+    -fx-border-color: transparent;
+}
 
 /* --- modal confirm --- */
 .modal-scrim {

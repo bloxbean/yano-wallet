@@ -99,7 +99,8 @@ public final class TxEffectEngine {
         if (!capabilities.canResolveInputs()) {
             return new TxEffect(TxEffect.Completeness.INCOMPLETE, capabilities.limitation(),
                     BigInteger.ZERO, feeOf(body), List.of(), TxEffect.ScriptOutcome.COULD_NOT_VERIFY, null,
-                    List.of(), factsOf(body, hasRedeemers, List.of(), 0, BigInteger.ZERO, false), List.of())
+                    List.of(), factsOf(body, hasRedeemers, List.of(),
+                            orEmpty(body.getInputs()).size(), BigInteger.ZERO, false), List.of())
                     .withRisks(List.of(new RiskSignal(RiskSignal.Kind.INCOMPLETE_SUMMARY,
                             RiskSignal.Severity.WARNING, "Not checked",
                             capabilities.limitation() != null ? capabilities.limitation()

@@ -127,8 +127,7 @@ public class DashboardScreen implements Shell.Screen {
     }
 
     private Node txRow(WalletUiController.TxItem tx) {
-        Label hash = new Label(Ui.middleEllipsis(tx.txHash(), 10));
-        hash.getStyleClass().add("mono");
+        Node hash = Ui.txHash(tx.txHash(), tx.explorerUrl(), 10);
         Label status = Ui.chip(tx.status(), statusClass(tx.status()));
         Label time = Ui.muted(tx.timeText());
         HBox row = Ui.row(12, hash, status, Ui.spacer(),

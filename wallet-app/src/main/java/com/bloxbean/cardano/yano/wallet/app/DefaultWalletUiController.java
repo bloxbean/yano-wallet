@@ -68,6 +68,9 @@ public class DefaultWalletUiController implements WalletUiController {
     private volatile com.bloxbean.cardano.yano.wallet.connector.Cip30BridgeServer connectorServer;
     private volatile com.bloxbean.cardano.yano.wallet.connector.Cip30LocalSocketServer connectorSocketServer;
     private volatile Cip30AllowlistStore cip30Allowlist;
+    private volatile ConnectorSettingsStore connectorSettings;
+    /** Kept so the connector can be restarted when the transport changes. */
+    private volatile com.bloxbean.cardano.yano.wallet.ui.contract.Cip30Prompt connectorPrompt;
     private volatile TxEffectSummariser txEffectSummariser;
     private boolean connectorStarted;
     // Native Messaging (ADR-035 M5) is the default transport. The legacy
@@ -96,6 +99,15 @@ public class DefaultWalletUiController implements WalletUiController {
     @Override
     public List<String> availableNetworks() {
         return java.util.Arrays.stream(WalletNetwork.values()).map(WalletNetwork::id).toList();
+    }
+
+    @Override
+    public String networkLabel(String networkId) {
+        try {
+            return WalletNetwork.fromId(networkId).displayName();
+        } catch (RuntimeException e) {
+            return networkId; // an unknown id is still better shown than swallowed
+        }
     }
 
     @Override
@@ -592,29 +604,52 @@ public class DefaultWalletUiController implements WalletUiController {
             return;
         }
         connectorStarted = true; // set before the try so a partial failure doesn't re-bind on retry
+        connectorPrompt = prompt;
         try {
             cip30Allowlist = new Cip30AllowlistStore(backendManager.dataDir());
+            if (connectorSettings == null) {
+                connectorSettings = new ConnectorSettingsStore(backendManager.dataDir());
+            }
+            // Choosing WebSocket must actually SWITCH, not merely add. The
+            // extension always tries Native Messaging first and falls back only
+            // when it throws (see background.js relay/probeReachability), so
+            // leaving the native socket running would keep every dApp on native
+            // and the user's choice would appear to do nothing. It would also
+            // make the launch warning false — it says dApps reach the wallet over
+            // the WebSocket, which would not be true.
+            //
+            // The --enable-ws-connector flag keeps its older additive meaning.
+            boolean webSocketChosen = connectorSettings.isWebSocket();
+            wsConnectorEnabled = wsConnectorEnabled || webSocketChosen;
             var wallet = new WalletCip30Wallet(backendManager, () -> session);
             var approvals = new Cip30ApprovalGate(cip30Allowlist, prompt, summariser());
             // Default transport (ADR-035 M5): the browser-launched proxy relays
             // to this socket — no localhost port, and Chrome vouches for the
             // extension id. Best-effort; a bind failure never breaks the wallet.
-            try {
-                var socketServer = new com.bloxbean.cardano.yano.wallet.connector.Cip30LocalSocketServer(
-                        new NativeMessagingInstaller().socketPath(), wallet, approvals);
-                socketServer.start();
-                connectorSocketServer = socketServer;
-            } catch (Exception e) {
-                System.err.println("CIP-30 native-messaging socket could not start: " + e.getMessage());
+            if (webSocketChosen) {
+                System.err.println("CIP-30 native-messaging socket NOT started — the WebSocket"
+                        + " transport was selected in Settings.");
+            } else {
+                try {
+                    var socketServer = new com.bloxbean.cardano.yano.wallet.connector.Cip30LocalSocketServer(
+                            new NativeMessagingInstaller().socketPath(), wallet, approvals);
+                    socketServer.start();
+                    connectorSocketServer = socketServer;
+                } catch (Exception e) {
+                    System.err.println("CIP-30 native-messaging socket could not start: " + e.getMessage());
+                }
             }
             // Legacy localhost WebSocket — opt-in only (--enable-ws-connector),
             // because its origin is self-asserted (ADR-035 transport decision).
             if (wsConnectorEnabled) {
-                var server = new com.bloxbean.cardano.yano.wallet.connector.Cip30BridgeServer(wallet, approvals);
+                var server = new com.bloxbean.cardano.yano.wallet.connector.Cip30BridgeServer(
+                        connectorSettings.settings().wsPort(), wallet, approvals);
                 server.start();
                 connectorServer = server;
-                System.err.println("CIP-30 legacy WebSocket connector ENABLED on 127.0.0.1"
-                        + " (--enable-ws-connector); Native Messaging is preferred.");
+                System.err.println("CIP-30 legacy WebSocket connector ENABLED on 127.0.0.1:"
+                        + connectorSettings.settings().wsPort()
+                        + " — the calling page's origin is self-asserted here, so prefer Native"
+                        + " Messaging (Settings -> Browser connector).");
             }
         } catch (RuntimeException e) {
             // A bind failure (e.g. the port is taken) must never break the wallet.
@@ -637,6 +672,44 @@ public class DefaultWalletUiController implements WalletUiController {
             txEffectSummariser = null;
         }
         connectorStarted = false;
+    }
+
+    @Override
+    public ConnectorSettingsView connectorSettings() {
+        ConnectorSettingsStore store = connectorSettings;
+        if (store == null) {
+            store = new ConnectorSettingsStore(backendManager.dataDir());
+            connectorSettings = store;
+        }
+        var current = store.settings();
+        return new ConnectorSettingsView(current.transport(), current.wsPort(), store.isWeakTransport());
+    }
+
+    @Override
+    public CompletableFuture<String> setConnectorTransport(String transport, int wsPort) {
+        return async(() -> {
+            ConnectorSettingsStore store = connectorSettings;
+            if (store == null) {
+                store = new ConnectorSettingsStore(backendManager.dataDir());
+                connectorSettings = store;
+            }
+            var saved = store.save(transport, wsPort);
+
+            // Restart the connector so the choice takes effect now. Without this
+            // the setting would only apply after a restart, and a user switching
+            // BECAUSE the connector is broken would have no way to tell whether
+            // it helped.
+            var prompt = connectorPrompt;
+            stopDappConnector();
+            wsConnectorEnabled = ConnectorSettingsStore.WEBSOCKET.equals(saved.transport());
+            if (prompt != null) {
+                startDappConnector(prompt);
+            }
+            return ConnectorSettingsStore.WEBSOCKET.equals(saved.transport())
+                    ? "Listening on localhost:" + saved.wsPort()
+                    + " — any local program can reach this port, so prefer Native Messaging."
+                    : "Using Native Messaging. Restart your browser if a dApp still cannot connect.";
+        });
     }
 
     @Override
@@ -703,42 +776,63 @@ public class DefaultWalletUiController implements WalletUiController {
 
             // Node's confirmed history first — it is authoritative. A tx here
             // wins over a stale local pending record of the same hash.
-            List<TxItem> nodeItems = new ArrayList<>();
+            List<Dated> dated = new ArrayList<>();
             Set<String> nodeHashes = new LinkedHashSet<>();
             for (HistoryPort.TxRef tx : ports().walletTransactions(
                     profile.stakeAddress(), profile.baseAddress(), page, count, true)) {
                 nodeHashes.add(tx.txHash());
-                nodeItems.add(new TxItem(tx.txHash(), tx.blockHeight(),
+                dated.add(new Dated(tx.blockTime(), new TxItem(tx.txHash(), tx.blockHeight(),
                         TIME_FORMAT.format(Instant.ofEpochSecond(tx.blockTime())),
-                        "confirmed", null, null, explorerUrl(network, tx.txHash())));
+                        "confirmed", null, null, explorerUrl(network, tx.txHash()))));
             }
 
             List<TxItem> items = new ArrayList<>();
             if (page == 1) {
-                // Page 1: prepend local submissions the node's history can't see
-                // yet. The node's account-history (nodeHashes) is the single source
-                // of "confirmed", so a local record shows as pending until it lands
+                // Page 1 also carries local submissions the node's history cannot
+                // see yet. History (nodeHashes) is the single source of
+                // "confirmed", so a local record stays pending until it lands
                 // there — regardless of the confirmation tracker's own flag, which
-                // can run ahead of history and would otherwise make a just-submitted
-                // tx vanish until the block indexes. Once history has it, drop the
-                // local record.
+                // can run ahead of history and would otherwise make a
+                // just-submitted tx vanish until the block indexes.
+                //
+                // Only transactions still plausibly in flight are pinned above the
+                // confirmed list. One that timed out is not news any more, so it
+                // sorts into the history by the time it was submitted — otherwise
+                // a failure from days ago outranks today's transactions forever.
+                List<TxItem> inFlight = new ArrayList<>();
+                long now = System.currentTimeMillis();
                 for (PendingTransaction pending : service().pendingTransactions(
                         profile.id(), profile.networkId())) {
                     if (nodeHashes.contains(pending.txHash())) {
                         service().forgetPending(pending.txHash());
                         continue;
                     }
-                    boolean failed = "FAILED".equals(pending.status().name());
-                    items.add(new TxItem(pending.txHash(), 0,
+                    // Never seen on chain and out of time: stop calling it pending.
+                    service().expirePendingIfStale(pending.txHash(), now);
+                    boolean failed = "FAILED".equals(pending.status().name())
+                            || now - pending.createdAtEpochMillis() > WalletService.PENDING_TIMEOUT_MILLIS;
+                    TxItem item = new TxItem(pending.txHash(), 0,
                             TIME_FORMAT.format(Instant.ofEpochMilli(pending.createdAtEpochMillis())),
                             failed ? "failed" : "pending",
                             "₳ " + ada(pending.lovelace()), "sent",
-                            explorerUrl(network, pending.txHash())));
+                            explorerUrl(network, pending.txHash()));
+                    if (failed) {
+                        dated.add(new Dated(pending.createdAtEpochMillis() / 1000L, item));
+                    } else {
+                        inFlight.add(item);
+                    }
                 }
+                items.addAll(inFlight);
             }
-            items.addAll(nodeItems);
+            // Newest first, mixing timed-out local records into the confirmed list.
+            dated.sort(java.util.Comparator.comparingLong(Dated::epochSeconds).reversed());
+            dated.forEach(entry -> items.add(entry.item()));
             return items;
         });
+    }
+
+    /** A history row with the timestamp it should sort by (block time, or submission time). */
+    private record Dated(long epochSeconds, TxItem item) {
     }
 
     private static String explorerUrl(WalletNetwork network, String txHash) {

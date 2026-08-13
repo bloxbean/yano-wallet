@@ -8,6 +8,7 @@ import javafx.application.Platform;
 import javafx.geometry.Insets;
 import javafx.geometry.Pos;
 import javafx.scene.Node;
+import javafx.scene.control.Hyperlink;
 import javafx.scene.control.Label;
 import javafx.scene.input.Clipboard;
 import javafx.scene.input.ClipboardContent;
@@ -79,6 +80,28 @@ public final class Ui {
     public static String middleEllipsis(String value, int keep) {
         if (value == null || value.length() <= keep * 2 + 3) return value;
         return value.substring(0, keep) + "…" + value.substring(value.length() - keep);
+    }
+
+    /**
+     * An abbreviated transaction hash, linked to an explorer where the network has
+     * one. Mainnet, preprod and preview link to Cardanoscan and a Yaci DevKit to
+     * the local Yaci Viewer; a Yano devnet has no explorer, so {@code explorerUrl}
+     * is null there and the hash renders as plain text.
+     *
+     * <p>Shared so that every list showing a hash links it the same way — a hash
+     * that is clickable in History and inert on the dashboard reads as a bug.
+     */
+    public static Node txHash(String txHash, String explorerUrl, int keep) {
+        String text = middleEllipsis(txHash, keep);
+        if (explorerUrl == null || explorerUrl.isBlank()) {
+            Label label = new Label(text);
+            label.getStyleClass().add("mono");
+            return label;
+        }
+        Hyperlink link = new Hyperlink(text);
+        link.getStyleClass().add("mono");
+        link.setOnAction(e -> openUrl(explorerUrl));
+        return link;
     }
 
     public static void copyToClipboard(String value) {

@@ -44,8 +44,11 @@ is the clearest case in ADR-041's filter of something we can do and they cannot.
   accepts raw CBOR (`application/cbor`) or hex (`text/plain`). Returns ExUnits
   per redeemer as `{"EvaluationResult": {"spend:0": {"memory":…, "steps":…}}}`,
   or `{"EvaluationFailure": {"message": …}}`.
-- `GET /utxos/{txHash}/{index}` (`UtxoResource`) — resolves an output reference
-  to its address, value and datum. This is what makes input resolution possible.
+- `GET /txs/{txHash}/utxos` (`TransactionResource.getTxUtxos`) — returns every
+  output of a transaction with its address, value and datum, so an output
+  reference resolves by picking the entry whose `output_index` matches. This is
+  what makes input resolution possible. See *Which route resolves inputs* below
+  for why this one and not `/utxos/{txHash}/{index}`.
 
 Both resources are present in the pinned `yano-0.1.0-pre12` release jar — the
 History failure of 2026-08-07 (calling endpoints no published build served)
@@ -74,12 +77,74 @@ Three limits matter for the design:
    "cannot fully determine" outcome.
 
 Client semantics to encode in `YanoNodeClient`: an `EvaluationFailure` arrives
-as HTTP 200 (parse the body, never the status); a miss on
-`/utxos/{txHash}/{index}` is a 404 with an empty body; and CCL's
-`BFUtxoService.getTxOutput` resolves through `/txs/{hash}/utxos` — historical
-on-chain outputs, a different question from the node's unspent-only
-`/utxos/{txHash}/{index}` — so the client gets a direct `getUtxo(txHash, index)`
-rather than reusing CCL's.
+as HTTP 200 (parse the body, never the status), and a 404 must be classified by
+the *shape* of its body, not by the mere presence of one — see below.
+
+### Which route resolves inputs (revised 2026-08-12)
+
+This ADR originally chose `GET /utxos/{txHash}/{index}`, reasoning that it
+answers the narrower question — *is this output currently unspent* — where
+`/txs/{hash}/utxos` answers *what did this transaction output*, historically.
+That was the wrong trade. **Inputs now resolve through
+`GET /txs/{txHash}/utxos`**, for three reasons that outrank it:
+
+1. **It is the only standard one.** Blockfrost's OpenAPI defines 129 paths and no
+   top-level `/utxos` resource at all; `/utxos/{txHash}/{index}` is a Yano and
+   yaci-store extension. Resolving through the standard route is what lets the
+   wallet be pointed at *any* Blockfrost-compatible backend (ADR-038) and still
+   compute the effect.
+2. **The two backends agree on it, field for field.** On the extension route they
+   do not: a Yano node answers `address`/`amount`, yaci-store `owner_addr`/
+   `amounts`. Reading only the first spelling made *every* input on a Yaci DevKit
+   fail to resolve, which the user saw as "the effect on your wallet cannot be
+   computed". One route, one parser, no per-backend spelling.
+3. **A spent input is not a reason to refuse a number.** The unspent-only route
+   404s for an already-spent output, so it resolved as *unresolved* and degraded
+   the summary. The historical route resolves it, and the value it reports is the
+   correct one — a transaction spending a spent input cannot succeed either way.
+   The trade is fewer summaries falsely marked incomplete, against an "this input
+   is already spent" signal the wallet never read.
+
+Two properties this route forces, both load-bearing:
+
+- **Pick by declared `output_index`, never by array position.** The response
+  carries every output of the transaction, so the client must select one; nothing
+  promises the list is ordered or complete. Taking `outputs[index]` on a list
+  that is neither would resolve a different address holding a different amount
+  while still reporting the summary as complete — the confident-smaller-loss
+  outcome this ADR exists to prevent. An entry that does not declare its index is
+  refused, and a list with no entry at that index resolves to unresolved.
+- **Classify 404s by body shape.** Both backends report an unknown transaction
+  with a JSON body (a Yano node `{"error":"Transaction not found"}`, yaci-store
+  the RFC 7807 equivalent), while a server that does not serve the route at all
+  answers with an HTML error page. Reading "404 with a body" as "no such route"
+  is what once declared a perfectly capable DevKit incapable of resolving inputs.
+
+Not reused: CCL's `BFTransactionService.getTransactionOutput`. It is a close
+match — same route, and it selects by `output_index` rather than array position,
+which is independent confirmation that the guard above is the right one. Two
+things kept resolution local, and neither is large; recording them honestly
+matters more than the decision, because a future reader may reasonably re-open it:
+
+- **Per-request bound.** CCL's Retrofit is built without an `OkHttpClient`
+  (`getRetrofit()` returns `new Retrofit.Builder().baseUrl(…).addConverterFactory(…)
+  .build()`), so it inherits OkHttp's 10s connect/read defaults with no call
+  timeout and no injection point; `YanoNodeClient` bounds each call at
+  `SIMULATION_TIMEOUT` (2s). This is **not** a 10s stall the user would see —
+  `TxEffectSummariser` caps the whole analysis at `BUDGET_SECONDS` (3s) on its own
+  thread, so the prompt appears on time either way and the wallet never blocks the
+  FX thread. What the tighter bound buys is the *quality* of a degraded answer:
+  inputs resolve concurrently, so a request abandoned at 2s leaves one input
+  unresolved while the rest still complete inside the budget, where a request
+  still pending at 3s degrades the entire summary to "not verified at all".
+  Secondarily, an abandoned OkHttp call can hold a resolver thread past the
+  budget that gave up on it.
+- **`TxContentUtxoOutputs.getOutputIndex()` returns primitive `int`,** so an entry
+  whose JSON omits the field reads as index 0 and would match a request for index
+  0. The local parser refuses an entry that does not declare its index.
+
+If CCL gains a configurable client, this is worth revisiting — the parsing itself
+was never the reason.
 
 ## Decision
 
@@ -113,8 +178,9 @@ available and by `policy.assetName` otherwise — **never** silently omitted, si
 an unnamed asset leaving the wallet is exactly the case an attacker wants
 invisible.
 
-Inputs are resolved via `GET /utxos/{txHash}/{index}`. Inputs the node cannot
-resolve (already spent, or not yet on-chain) are surfaced as *unresolved*, and an
+Inputs are resolved via `GET /txs/{txHash}/utxos`. Inputs the node cannot
+resolve (creating transaction not on-chain, or no output at that index, or the
+node could not be asked) are surfaced as *unresolved*, and an
 unresolved input that could be ours degrades the summary to "cannot fully
 determine" rather than under-reporting the loss. **A partial answer presented as
 complete is worse than no answer.**
@@ -215,7 +281,7 @@ form, and one implementation serving both keeps them honest with each other.
 
 - **SIM-M0 — node capability gate.** ADR-041's declared-minimum-node
   prerequisite, built first: probe once at connect, record whether
-  `/utxos/{hash}/{index}` and `/utils/txs/evaluate` exist, and degrade legibly
+  `/txs/{hash}/utxos` and `/utils/txs/evaluate` exist, and degrade legibly
   where they do not. Probe capabilities, not version strings: `GET /node/config`
   reports the build-time `quarkus.application.version`, and a locally built
   node can be newer than the pinned release while reporting an older version

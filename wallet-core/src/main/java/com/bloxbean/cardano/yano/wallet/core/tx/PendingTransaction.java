@@ -154,6 +154,18 @@ public record PendingTransaction(
                 "Expired at slot " + currentSlot);
     }
 
+    /**
+     * True when this transaction was submitted, has still not been seen on chain,
+     * and has run out of time.
+     *
+     * <p>Only a PENDING record can go stale: one already marked FAILED keeps the
+     * reason it actually failed, which is more useful than a generic timeout.
+     */
+    public boolean isStale(long nowEpochMillis, long timeoutMillis) {
+        return status == PendingTransactionStatus.PENDING
+                && nowEpochMillis - createdAtEpochMillis > timeoutMillis;
+    }
+
     public PendingTransaction markFailed(String errorMessage) {
         return new PendingTransaction(
                 txHash,

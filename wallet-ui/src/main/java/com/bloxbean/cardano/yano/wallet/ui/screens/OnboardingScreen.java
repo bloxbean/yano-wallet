@@ -37,6 +37,7 @@ public class OnboardingScreen {
     private final WalletUiController controller;
     private final StackPane overlay;
     private final Consumer<WalletUiController.WalletItem> onUnlocked;
+    private final Runnable onChangeNetwork;
     private final VBox content = new VBox(16);
     /**
      * Forms (create/restore/unlock/backup) live in their own scroller, centred
@@ -48,9 +49,23 @@ public class OnboardingScreen {
 
     public OnboardingScreen(WalletUiController controller, StackPane overlay,
                             Consumer<WalletUiController.WalletItem> onUnlocked) {
+        this(controller, overlay, onUnlocked, null);
+    }
+
+    /**
+     * @param onChangeNetwork returns to the Connect screen; may be null. Without
+     *                        it this screen is a dead end for anyone who picked
+     *                        the wrong network: the wallets on offer here are the
+     *                        ones stored for the CURRENT network, so a user who
+     *                        wants a different chain has nothing to click.
+     */
+    public OnboardingScreen(WalletUiController controller, StackPane overlay,
+                            Consumer<WalletUiController.WalletItem> onUnlocked,
+                            Runnable onChangeNetwork) {
         this.controller = controller;
         this.overlay = overlay;
         this.onUnlocked = onUnlocked;
+        this.onChangeNetwork = onChangeNetwork;
         content.setAlignment(Pos.CENTER);
         // Wide enough for the three entry buttons on one line, and for account
         // rows (name + address + action) to breathe.
@@ -81,8 +96,20 @@ public class OnboardingScreen {
         brand.getStyleClass().add("brand-large");
         Label tagline = new Label("Your keys. Your node. Nothing in between.");
         tagline.getStyleClass().add("brand-sub");
-        Label network = Ui.chip(controller.networkId(), "chip-network");
-        VBox header = new VBox(6, Ui.row(12, brand, Ui.spacer(), network), tagline);
+        Label network = Ui.chip(controller.networkLabel(controller.networkId()), "chip-network");
+        // Beside the network it changes, so the label and the thing it affects
+        // are read together.
+        Node networkControls = network;
+        if (onChangeNetwork != null) {
+            Button switchNetwork = new Button("Switch network");
+            switchNetwork.getStyleClass().add("link-button");
+            switchNetwork.setTooltip(new Tooltip(
+                    "Choose a different network or node. The wallets listed here are the ones "
+                            + "stored for " + controller.networkLabel(controller.networkId()) + "."));
+            switchNetwork.setOnAction(e -> onChangeNetwork.run());
+            networkControls = Ui.row(8, network, switchNetwork);
+        }
+        VBox header = new VBox(6, Ui.row(12, brand, Ui.spacer(), networkControls), tagline);
         header.getStyleClass().add("onboarding-header");
 
         VBox walletList = new VBox(16);
