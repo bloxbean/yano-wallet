@@ -11,6 +11,8 @@ import com.bloxbean.cardano.yano.wallet.connector.Cip30Exception;
 import com.bloxbean.cardano.yano.wallet.connector.Cip30Wallet;
 import com.bloxbean.cardano.yano.wallet.core.service.WalletService;
 import com.bloxbean.cardano.yano.wallet.core.wallet.StoredWallet;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 
 import java.math.BigInteger;
 import java.time.Duration;
@@ -28,6 +30,16 @@ import java.util.function.Supplier;
  * + submit are live; signing arrives in M2.
  */
 final class WalletCip30Wallet implements Cip30Wallet {
+
+    /**
+     * Every dApp request the wallet answers, and every rejection the node gives
+     * back. Without this a failed dApp flow leaves nothing behind: the error goes
+     * to the dApp, which usually collapses it to "failed to sign or submit", and
+     * the wallet's own log shows the connection and nothing else. Diagnosing the
+     * 2026-08-13 CIP-113 failure took several rounds of inference that one line of
+     * this would have replaced.
+     */
+    private static final Logger log = LoggerFactory.getLogger(WalletCip30Wallet.class);
 
     /**
      * How long {@link #submitTx} will wait for a parent transaction to reach a
@@ -104,6 +116,8 @@ final class WalletCip30Wallet implements Cip30Wallet {
     public String signTx(String txHex, boolean partialSign) {
         try {
             StoredWallet profile = profile();
+            log.info("CIP-30 signTx: {} bytes, partialSign={}, tx {}",
+                    txHex.length() / 2, partialSign, txHashOrUnknown(txHex));
             if (profile.isHardware()) {
                 // Translate the dApp CBOR to the device stream; the Ledger shows the
                 // tx for confirmation and the hash gate protects against mismatches.
@@ -111,11 +125,26 @@ final class WalletCip30Wallet implements Cip30Wallet {
                 return hardwareDappSigner.signTx(conn.backend(), conn.network(), profile,
                         txHex, partialSign);
             }
-            return requireSession().signDappTx(txHex, partialSign);
+            String witnessSet = requireSession().signDappTx(txHex, partialSign);
+            log.info("CIP-30 signTx: returning {} bytes of witnesses for tx {}",
+                    witnessSet.length() / 2, txHashOrUnknown(txHex));
+            return witnessSet;
         } catch (Cip30Exception e) {
+            log.warn("CIP-30 signTx refused for tx {}: {}", txHashOrUnknown(txHex), e.getMessage());
             throw e;
         } catch (RuntimeException e) {
+            log.warn("CIP-30 signTx failed for tx {}: {}", txHashOrUnknown(txHex), e.toString());
             throw Cip30Exception.internal(e.getMessage());
+        }
+    }
+
+    /** For log lines only — never let a logging concern break a dApp call. */
+    private static String txHashOrUnknown(String txHex) {
+        try {
+            return com.bloxbean.cardano.client.transaction.util.TransactionUtil
+                    .getTxHash(HexUtil.decodeHexString(txHex));
+        } catch (Exception e) {
+            return "<unreadable>";
         }
     }
 
@@ -146,9 +175,20 @@ final class WalletCip30Wallet implements Cip30Wallet {
             return submitOnce(txHex);
         } catch (Cip30Exception first) {
             TransactionInput parent = chainedParentAwaitingABlock(txHex, first);
-            if (parent == null || !awaitOnChain(parent)) {
+            if (parent == null) {
+                log.warn("CIP-30 submitTx failed for tx {} (not a chained-parent wait): {}",
+                        txHashOrUnknown(txHex), first.getMessage());
                 throw first;
             }
+            log.info("CIP-30 submitTx: waiting up to {}s for parent {}#{} to reach a block",
+                    CHAIN_WAIT.toSeconds(), parent.getTransactionId(), parent.getIndex());
+            if (!awaitOnChain(parent)) {
+                log.warn("CIP-30 submitTx: parent {}#{} did not land in {}s; returning the original error: {}",
+                        parent.getTransactionId(), parent.getIndex(), CHAIN_WAIT.toSeconds(),
+                        first.getMessage());
+                throw first;
+            }
+            log.info("CIP-30 submitTx: parent landed, resubmitting tx {}", txHashOrUnknown(txHex));
             // The parent is on chain now, so the input the node could not see
             // exists. Resubmitting the same bytes is idempotent — same
             // transaction, same hash — so the worst case is the identical error.
@@ -167,8 +207,13 @@ final class WalletCip30Wallet implements Cip30Wallet {
             throw Cip30Exception.internal("Failed to submit transaction: " + e.getMessage());
         }
         if (!result.isSuccessful()) {
+            // The node's own words, in full. This is the line that says WHY, and
+            // the dApp almost never shows it to the user.
+            log.warn("CIP-30 submitTx: node rejected tx {} (code {}): {}",
+                    txHashOrUnknown(txHex), result.code(), result.getResponse());
             throw Cip30Exception.internal("Node rejected the transaction: " + result.getResponse());
         }
+        log.info("CIP-30 submitTx: node accepted tx {}", result.getValue());
         String txHash = result.getValue();
         // A dApp that submits THROUGH the wallet gives us a reliable "this tx
         // is going on-chain" signal (unlike signTx, which a dApp may abandon),
