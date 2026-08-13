@@ -1,5 +1,6 @@
 package com.bloxbean.cardano.yano.wallet.nodeclient;
 
+import com.bloxbean.cardano.yano.wallet.core.config.BackendFlavor;
 import com.bloxbean.cardano.yano.wallet.core.service.HistoryPort;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
@@ -50,8 +51,8 @@ class BlockfrostFlavorPathTest {
         node.close();
     }
 
-    private YanoNodePorts ports(boolean blockfrostFlavor) {
-        return new YanoNodePorts(new YanoNodeClient(node.baseUrl(), blockfrostFlavor));
+    private YanoNodePorts ports(BackendFlavor flavor) {
+        return new YanoNodePorts(new YanoNodeClient(node.baseUrl(), flavor));
     }
 
     private static String addressTxs() {
@@ -66,7 +67,7 @@ class BlockfrostFlavorPathTest {
     void aYanoNodeIsAskedForAccountHistory() {
         node.on("/api/v1/accounts/" + STAKE + "/transactions", addressTxs());
 
-        List<HistoryPort.TxRef> history = ports(false).walletTransactions(STAKE, ADDRESS, 1, 10, true);
+        List<HistoryPort.TxRef> history = ports(BackendFlavor.YANO).walletTransactions(STAKE, ADDRESS, 1, 10, true);
 
         assertThat(history).singleElement()
                 .satisfies(tx -> assertThat(tx.txHash()).isEqualTo("aa11"));
@@ -79,7 +80,7 @@ class BlockfrostFlavorPathTest {
         // silently produce an empty history.
         node.on("/api/v1/addresses/" + ADDRESS + "/transactions", addressTxs());
 
-        List<HistoryPort.TxRef> history = ports(true).walletTransactions(STAKE, ADDRESS, 1, 10, true);
+        List<HistoryPort.TxRef> history = ports(BackendFlavor.YACI_STORE).walletTransactions(STAKE, ADDRESS, 1, 10, true);
 
         assertThat(history).singleElement()
                 .satisfies(tx -> assertThat(tx.txHash()).isEqualTo("aa11"));
@@ -91,7 +92,7 @@ class BlockfrostFlavorPathTest {
     void aMissingHistoryRouteIsReportedNotSwallowed() {
         // Nothing registered → 404. History must degrade loudly enough for the UI
         // to say "unavailable" rather than render a convincing empty list.
-        assertThatThrownBy(() -> ports(true).walletTransactions(STAKE, ADDRESS, 1, 10, true))
+        assertThatThrownBy(() -> ports(BackendFlavor.YACI_STORE).walletTransactions(STAKE, ADDRESS, 1, 10, true))
                 .isInstanceOf(HistoryPort.HistoryUnavailableException.class);
     }
 
@@ -104,7 +105,7 @@ class BlockfrostFlavorPathTest {
                  "registered_epoch":480,"deposit":"500000000"}
                 """.formatted(DREP));
 
-        YanoNodeClient.DRepInfo drep = new YanoNodeClient(node.baseUrl(), false).getDRepInfo(DREP);
+        YanoNodeClient.DRepInfo drep = new YanoNodeClient(node.baseUrl(), BackendFlavor.YANO).getDRepInfo(DREP);
 
         assertThat(drep).isNotNull();
         assertThat(drep.active()).isTrue();
@@ -121,7 +122,7 @@ class BlockfrostFlavorPathTest {
                  "status":"ACTIVE","voting_power":"0","registration_slot":900,"drep_type":"KEY_HASH"}
                 """.formatted(DREP));
 
-        YanoNodeClient.DRepInfo drep = new YanoNodeClient(node.baseUrl(), true).getDRepInfo(DREP);
+        YanoNodeClient.DRepInfo drep = new YanoNodeClient(node.baseUrl(), BackendFlavor.YACI_STORE).getDRepInfo(DREP);
 
         assertThat(drep).isNotNull();
         assertThat(drep.active()).isTrue();
@@ -137,7 +138,7 @@ class BlockfrostFlavorPathTest {
         node.on("/api/v1/governance-state/dreps/expired", """
                 {"drep_id":"expired","deposit":"0","status":"EXPIRED"}""");
 
-        YanoNodeClient client = new YanoNodeClient(node.baseUrl(), true);
+        YanoNodeClient client = new YanoNodeClient(node.baseUrl(), BackendFlavor.YACI_STORE);
 
         assertThat(client.getDRepInfo("retired").retired()).isTrue();
         assertThat(client.getDRepInfo("retired").active()).isFalse();
@@ -149,7 +150,7 @@ class BlockfrostFlavorPathTest {
     void anUnregisteredDRepIsNullOnBothFlavors() {
         // 404 here genuinely means "no such DRep" — the route exists on each
         // flavor, which is the whole point of choosing the right one.
-        assertThat(new YanoNodeClient(node.baseUrl(), true).getDRepInfo(DREP)).isNull();
-        assertThat(new YanoNodeClient(node.baseUrl(), false).getDRepInfo(DREP)).isNull();
+        assertThat(new YanoNodeClient(node.baseUrl(), BackendFlavor.YACI_STORE).getDRepInfo(DREP)).isNull();
+        assertThat(new YanoNodeClient(node.baseUrl(), BackendFlavor.YANO).getDRepInfo(DREP)).isNull();
     }
 }

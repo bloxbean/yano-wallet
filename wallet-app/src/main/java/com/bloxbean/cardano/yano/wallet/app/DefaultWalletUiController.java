@@ -133,7 +133,7 @@ public class DefaultWalletUiController implements WalletUiController {
     @Override
     public boolean supportsManagedNode(String networkId) {
         // The wallet can launch a Yano node, not a yaci-store (ADR-038).
-        return !WalletNetwork.fromId(networkId).blockfrostFlavor();
+        return !WalletNetwork.fromId(networkId).requiresExternalBackend();
     }
 
     @Override
@@ -187,12 +187,56 @@ public class DefaultWalletUiController implements WalletUiController {
 
     @Override
     public CompletableFuture<ConnectionInfo> connectExternal(String networkId, String baseUrl) {
+        return connectExternal(networkId, baseUrl, null);
+    }
+
+    @Override
+    public CompletableFuture<ConnectionInfo> connectExternal(String networkId, String baseUrl,
+                                                             String apiKey) {
         return async(() -> {
-            var conn = backendManager.connect(com.bloxbean.cardano.yano.wallet.core.config
-                    .WalletConnectionConfig.external(WalletNetwork.fromId(networkId), baseUrl));
+            WalletNetwork network = WalletNetwork.fromId(networkId);
+            var config = com.bloxbean.cardano.yano.wallet.core.config.WalletConnectionConfig
+                    .external(network, baseUrl, externalFlavor(network, baseUrl, apiKey), apiKey);
+            var conn = backendManager.connect(config);
             nodeReady = CompletableFuture.completedFuture(info(conn));
             return info(conn);
         });
+    }
+
+    /**
+     * Decides what an external backend is, from what the user actually supplied.
+     *
+     * <p>Hosted Blockfrost is never assumed — it is concluded only from a
+     * Blockfrost URL, because that flavor answers "may this connect to mainnet?"
+     * with yes (ADR-043 §5). A key alone does not make it hosted: the same field
+     * carries the credential for a Yano node behind an auth gateway, which is
+     * still a Yano node and must still prove its magic the same way.
+     */
+    private static com.bloxbean.cardano.yano.wallet.core.config.BackendFlavor externalFlavor(
+            WalletNetwork network, String baseUrl, String apiKey) {
+        if (com.bloxbean.cardano.yano.wallet.core.config.BlockfrostEndpoints.isHostedUrl(baseUrl)) {
+            return com.bloxbean.cardano.yano.wallet.core.config.BackendFlavor.BLOCKFROST_HOSTED;
+        }
+        return network.requiresExternalBackend()
+                ? com.bloxbean.cardano.yano.wallet.core.config.BackendFlavor.YACI_STORE
+                : com.bloxbean.cardano.yano.wallet.core.config.BackendFlavor.YANO;
+    }
+
+    @Override
+    public String savedApiKey() {
+        return backendManager.savedConfig().map(cfg -> cfg.apiKey()).orElse(null);
+    }
+
+    @Override
+    public ApiKeyHint apiKeyHint(String apiKey) {
+        WalletNetwork network = com.bloxbean.cardano.yano.wallet.core.config
+                .BlockfrostEndpoints.networkOf(apiKey);
+        if (network == null) {
+            return null;
+        }
+        return new ApiKeyHint(network.id(),
+                com.bloxbean.cardano.yano.wallet.core.config.BlockfrostEndpoints.baseUrlFor(network),
+                com.bloxbean.cardano.yano.wallet.core.config.BlockfrostEndpoints.PROVIDER);
     }
 
     @Override
@@ -847,7 +891,7 @@ public class DefaultWalletUiController implements WalletUiController {
             return "You are connected to a node you run yourself, so the wallet is not choosing "
                     + "relays — that node's own configuration decides where it syncs from.";
         }
-        if (network.blockfrostFlavor()) {
+        if (network.requiresExternalBackend()) {
             return "A Yaci DevKit is reached over HTTP and has no wallet-managed node, so there are "
                     + "no relays to set. Change its address when you connect instead.";
         }

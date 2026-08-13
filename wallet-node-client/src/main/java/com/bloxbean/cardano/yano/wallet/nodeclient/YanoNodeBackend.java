@@ -8,6 +8,7 @@ import com.bloxbean.cardano.client.backend.api.DefaultProtocolParamsSupplier;
 import com.bloxbean.cardano.client.backend.api.DefaultTransactionProcessor;
 import com.bloxbean.cardano.client.backend.api.DefaultUtxoSupplier;
 import com.bloxbean.cardano.client.backend.blockfrost.service.BFBackendService;
+import com.bloxbean.cardano.yano.wallet.core.config.BackendFlavor;
 import com.bloxbean.cardano.yano.wallet.core.config.WalletNetwork;
 
 import java.util.Objects;
@@ -36,27 +37,52 @@ public class YanoNodeBackend {
         this.network = network;
         this.nodeClient = nodeClient;
         this.backendService = backendService;
-        this.utxoSupplier = new DefaultUtxoSupplier(backendService.getUtxoService());
+        UtxoSupplier defaultSupplier = new DefaultUtxoSupplier(backendService.getUtxoService());
+        // A backend we authenticate to can answer a rejected request with an
+        // empty list, which would render as "no funds" (see
+        // VerifiedEmptyUtxoSupplier). A local node cannot, and pays nothing here.
+        this.utxoSupplier = nodeClient.flavor().requiresApiKey()
+                ? new VerifiedEmptyUtxoSupplier(defaultSupplier, nodeClient)
+                : defaultSupplier;
         this.protocolParamsSupplier = new DefaultProtocolParamsSupplier(backendService.getEpochService());
         this.transactionProcessor = new DefaultTransactionProcessor(backendService.getTransactionService());
         this.ports = new YanoNodePorts(nodeClient);
     }
 
     public static YanoNodeBackend connect(WalletNetwork network, String baseUrl) {
+        return connect(network, baseUrl, BackendFlavor.YANO, null);
+    }
+
+    /**
+     * @param flavor which backend software answers here — it decides which paths
+     *               exist, not merely which are preferred (ADR-038 §4), and
+     *               whether the network can be verified at all (ADR-043 §5).
+     *               Carried on the connection rather than derived from the
+     *               network, because the same network can be reached either way.
+     * @param apiKey credential, or null for a backend that needs none. Sent as
+     *               {@code project_id} by both halves of the connection — CCL's
+     *               client offers no other header (see {@link YanoNodeClient}).
+     */
+    public static YanoNodeBackend connect(WalletNetwork network, String baseUrl,
+                                          BackendFlavor flavor, String apiKey) {
         Objects.requireNonNull(network, "network is required");
         String normalized = YanoNodeClient.normalizeBaseUrl(baseUrl);
-        // The flavor decides which paths exist, not merely which are preferred
-        // (ADR-038 §4) — so it is fixed at connect time from the user's network
-        // choice, which is the only thing that can identify a yaci-store.
-        YanoNodeClient nodeClient = new YanoNodeClient(normalized, network.blockfrostFlavor());
-        // Yano ignores the Blockfrost project_id header; pass a placeholder.
-        BackendService backendService = new BFBackendService(normalized, "yano");
+        YanoNodeClient nodeClient = new YanoNodeClient(normalized, flavor, apiKey);
+        // A backend that needs no credential still gets a placeholder: Yano
+        // ignores the header, and CCL requires the argument.
+        BackendService backendService = new BFBackendService(normalized,
+                apiKey == null || apiKey.isBlank() ? "yano" : apiKey);
         return new YanoNodeBackend(network, nodeClient, backendService);
     }
 
-    /** Connects and fails fast if the node serves a different network. */
+    /** Connects and fails fast if the backend serves a different network. */
     public static YanoNodeBackend connectVerified(WalletNetwork network, String baseUrl) {
-        YanoNodeBackend backend = connect(network, baseUrl);
+        return connectVerified(network, baseUrl, BackendFlavor.YANO, null);
+    }
+
+    public static YanoNodeBackend connectVerified(WalletNetwork network, String baseUrl,
+                                                  BackendFlavor flavor, String apiKey) {
+        YanoNodeBackend backend = connect(network, baseUrl, flavor, apiKey);
         backend.nodeClient.verifyNetwork(network);
         return backend;
     }

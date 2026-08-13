@@ -56,6 +56,42 @@ public interface WalletUiController {
     /** Verifies and connects to an external node URL for the network. */
     CompletableFuture<ConnectionInfo> connectExternal(String networkId, String baseUrl);
 
+    /**
+     * Connects to an external backend with an optional credential (ADR-043).
+     *
+     * @param apiKey Blockfrost {@code project_id}, or whatever an auth gateway
+     *               in front of a node checks for. Null or blank connects with
+     *               no credential, exactly as {@link #connectExternal}.
+     */
+    CompletableFuture<ConnectionInfo> connectExternal(String networkId, String baseUrl, String apiKey);
+
+    /**
+     * What an API key implies about the connection, for the Connect screen to
+     * fill in before anyone clicks anything (ADR-043 §4). Null when the key is
+     * blank or in no recognised form — in which case the wallet has learned
+     * nothing and must not guess.
+     */
+    ApiKeyHint apiKeyHint(String apiKey);
+
+    /**
+     * The credential stored with the saved connection, or null if it has none.
+     *
+     * <p>Exposed so the Connect screen can prefill it: the screen rebuilds the
+     * connection from its fields, so an empty field on a returning visit would
+     * silently drop a working key and fail with a 403.
+     */
+    String savedApiKey();
+
+    /**
+     * @param networkId the network this credential is for — it is scoped to one,
+     *                  and the backend enforces that regardless of what the
+     *                  wallet believes
+     * @param baseUrl   the conventional endpoint for that network
+     * @param provider  human name of the service, for the UI to say what it spotted
+     */
+    record ApiKeyHint(String networkId, String baseUrl, String provider) {
+    }
+
     /** Connects using the persisted connection config exactly (honors managed port). */
     CompletableFuture<ConnectionInfo> reconnectSaved();
 

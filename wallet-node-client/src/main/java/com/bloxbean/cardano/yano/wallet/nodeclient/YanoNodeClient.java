@@ -1,5 +1,6 @@
 package com.bloxbean.cardano.yano.wallet.nodeclient;
 
+import com.bloxbean.cardano.yano.wallet.core.config.BackendFlavor;
 import com.bloxbean.cardano.yano.wallet.core.config.WalletNetwork;
 import com.bloxbean.cardano.yano.wallet.core.simulate.AssetQuantity;
 import com.bloxbean.cardano.yano.wallet.core.simulate.ResolvedOutput;
@@ -38,29 +39,48 @@ public class YanoNodeClient {
     private final ObjectMapper objectMapper;
     private final Duration requestTimeout;
     /**
-     * True when the backend is Blockfrost-shaped (yaci-store / Yaci DevKit)
-     * rather than a Yano node (ADR-038). It changes which paths exist, not just
-     * which are faster: yaci-store has no /governance/dreps/{id} and no
-     * /accounts/{stake}/transactions, so those must be routed elsewhere.
+     * Which backend software answers here (ADR-038, ADR-043). It changes which
+     * paths exist, not just which are faster: yaci-store has no
+     * /governance/dreps/{id} and no /accounts/{stake}/transactions, so those must
+     * be routed elsewhere.
      */
-    private final boolean blockfrostFlavor;
+    private final BackendFlavor flavor;
+
+    /**
+     * Credential sent on every request, or null for a backend that needs none.
+     *
+     * <p>Always as {@code project_id}, whatever the flavor. That is Blockfrost's
+     * header, and it is the <em>only</em> one available: the money path runs
+     * through CCL's {@code BFBackendService}, whose single constructor takes a
+     * project id and sends it under that name with no way to add headers. Using
+     * a different scheme here would mean the two halves of one connection
+     * authenticating differently — so an auth gateway in front of a Yano node
+     * has to accept the credential in a {@code project_id} header.
+     */
+    private final String apiKey;
 
     public YanoNodeClient(String baseUrl) {
         this(baseUrl, HttpClient.newBuilder().connectTimeout(DEFAULT_TIMEOUT).build(), DEFAULT_TIMEOUT);
     }
 
-    public YanoNodeClient(String baseUrl, boolean blockfrostFlavor) {
+    public YanoNodeClient(String baseUrl, BackendFlavor flavor) {
         this(baseUrl, HttpClient.newBuilder().connectTimeout(DEFAULT_TIMEOUT).build(),
-                DEFAULT_TIMEOUT, blockfrostFlavor);
+                DEFAULT_TIMEOUT, flavor, null);
+    }
+
+    public YanoNodeClient(String baseUrl, BackendFlavor flavor, String apiKey) {
+        this(baseUrl, HttpClient.newBuilder().connectTimeout(DEFAULT_TIMEOUT).build(),
+                DEFAULT_TIMEOUT, flavor, apiKey);
     }
 
     public YanoNodeClient(String baseUrl, HttpClient httpClient, Duration requestTimeout) {
-        this(baseUrl, httpClient, requestTimeout, false);
+        this(baseUrl, httpClient, requestTimeout, BackendFlavor.YANO, null);
     }
 
     public YanoNodeClient(String baseUrl, HttpClient httpClient, Duration requestTimeout,
-                          boolean blockfrostFlavor) {
-        this.blockfrostFlavor = blockfrostFlavor;
+                          BackendFlavor flavor, String apiKey) {
+        this.flavor = flavor == null ? BackendFlavor.YANO : flavor;
+        this.apiKey = apiKey == null || apiKey.isBlank() ? null : apiKey;
         this.baseUri = URI.create(normalizeBaseUrl(baseUrl));
         this.httpClient = Objects.requireNonNull(httpClient, "httpClient is required");
         this.objectMapper = new ObjectMapper();
@@ -71,17 +91,41 @@ public class YanoNodeClient {
         return baseUri.toString();
     }
 
-    /** True when this backend is yaci-store rather than a Yano node (ADR-038). */
-    public boolean isBlockfrostFlavor() {
-        return blockfrostFlavor;
+    /** Which backend software this client is talking to (ADR-043 §2). */
+    public BackendFlavor flavor() {
+        return flavor;
+    }
+
+    /**
+     * Every request goes through here so the credential cannot be forgotten on
+     * one route — which would show up as a single mysteriously-403 feature
+     * rather than an obvious failure to connect.
+     */
+    private HttpRequest.Builder request(URI uri, Duration timeout) {
+        HttpRequest.Builder builder = HttpRequest.newBuilder(uri).timeout(timeout);
+        if (apiKey != null) {
+            builder.header("project_id", apiKey);
+        }
+        return builder;
     }
 
     public NodeStatus getStatus() {
+        // A backend with no /status is asked for its tip directly. Skipping the
+        // call rather than probing-and-falling-back matters because the two
+        // Blockfrost-shaped backends disagree on how they refuse: yaci-store
+        // answers 404 (which getJsonOrNull maps to null), hosted Blockfrost
+        // answers 400 "Invalid path" (which it throws on). Keying on the flavor
+        // sidesteps a fallback that would have to enumerate refusal codes, and
+        // saves a request that is known to fail.
+        if (!flavor.hasYanoStatus()) {
+            return blockfrostStatus();
+        }
         JsonNode root = getJsonOrNull("status");
         if (root == null) {
-            // No /status: a Blockfrost-compatible backend such as yaci-store
-            // (ADR-038). Its tip comes from /blocks/latest, and since there is no
-            // separate index to fall behind, report no lag rather than guess.
+            // A Yano-flavored backend that has no /status after all — an older
+            // node, or something Blockfrost-shaped behind a URL we were told was
+            // Yano. Its tip still comes from /blocks/latest, and with no separate
+            // index to fall behind, report no lag rather than guess.
             return blockfrostStatus();
         }
         JsonNode chain = root.path("chain");
@@ -185,21 +229,27 @@ public class YanoNodeClient {
      * Verifies the node at the base URL serves the expected network. A wallet
      * must never talk to a node on a different network than its stored wallets.
      *
-     * <p>Blockfrost-compatible backends (yaci-store) expose no genesis and so
-     * cannot be verified (ADR-038, yaci-store#1018). For those the network comes
-     * from the user's explicit choice, which is safe only because it drives key
-     * derivation: a non-mainnet choice derives {@code addr_test} keys, which
-     * cannot address mainnet funds. Mainnet therefore still demands proof.
+     * <p>yaci-store exposes no genesis and so cannot be verified (ADR-038,
+     * yaci-store#1018). For it the network comes from the user's explicit
+     * choice, which is safe only because it drives key derivation: a non-mainnet
+     * choice derives {@code addr_test} keys, which cannot address mainnet funds.
+     * Mainnet therefore still demands proof.
+     *
+     * <p>The decision keys on the BACKEND, not on the network (ADR-043 §5).
+     * Hosted Blockfrost serves {@code /genesis} with the magic — verified live
+     * on 2026-08-13 — so it is checked exactly as a Yano node is, and earns
+     * mainnet. Only yaci-store is exempt, and only yaci-store is refused.
      */
     public void verifyNetwork(WalletNetwork expected) {
-        if (expected.blockfrostFlavor()) {
+        if (!flavor.provesItsNetwork()) {
             if (expected.production()) {
-                throw new NodeClientException("Refusing to connect: " + expected.id()
-                        + " cannot prove which network it serves, so it must not be used for mainnet.");
+                throw new NodeClientException("Refusing to connect: this backend ("
+                        + flavor + ") cannot prove which network it serves, so it must not be"
+                        + " used for mainnet.");
             }
-            log.info("Skipping network verification for {} at {} — backend exposes no genesis;"
+            log.info("Skipping network verification for {} at {} — backend {} exposes no genesis;"
                     + " network taken from the user's explicit choice (magic {})",
-                    expected.id(), baseUri, expected.protocolMagic());
+                    expected.id(), baseUri, flavor, expected.protocolMagic());
             return;
         }
         long actualMagic = getGenesis().networkMagic();
@@ -227,8 +277,7 @@ public class YanoNodeClient {
             throw new IllegalArgumentException("txHash is required");
         }
         URI uri = baseUri.resolve("txs/" + txHash);
-        HttpRequest request = HttpRequest.newBuilder(uri)
-                .timeout(requestTimeout)
+        HttpRequest request = request(uri, requestTimeout)
                 .header("Accept", "application/json")
                 .GET()
                 .build();
@@ -316,7 +365,11 @@ public class YanoNodeClient {
         // `status` string and no registration epoch — it has no /governance/dreps
         // /{id} route at all, so asking it there 404s and the wallet would report
         // a registered DRep as "not registered".
-        if (blockfrostFlavor) {
+        // Hosted Blockfrost is on Yano's side of this split, not yaci-store's:
+        // probed live 2026-08-13, it serves /governance/dreps/{id} with the same
+        // active/retired/expired flags (ADR-043 §6b). Keying this on "is not
+        // Yano" would have routed it to a path that does not exist there.
+        if (!flavor.hasYanoDRepPath()) {
             JsonNode root = getJsonOrNull("governance-state/dreps/" + drepId);
             return root == null ? null : toDRepInfoFromGovernanceState(root);
         }
@@ -647,12 +700,26 @@ public class YanoNodeClient {
     }
 
     private ScriptEvaluation parseEvaluation(String body) {
-        JsonNode result;
+        JsonNode root;
         try {
-            result = objectMapper.readTree(body).path("result");
+            root = objectMapper.readTree(body);
         } catch (IOException e) {
             return ScriptEvaluation.unavailable("Unreadable evaluation response from the node");
         }
+        // Ogmios reports a rejected REQUEST as a jsonwsp fault rather than an
+        // EvaluationFailure inside a result. Hosted Blockfrost answers that way —
+        // 200 with {"type":"jsonwsp/fault", "fault":{"code":"client","string":…}}
+        // (verified live 2026-08-13). Without this branch the envelope matches
+        // nothing, the capability probe reads UNKNOWN, and simulate-before-you-sign
+        // reports "could not verify" for every script transaction on that backend.
+        JsonNode fault = root.path("fault");
+        if (!fault.isMissingNode() && fault.isObject()) {
+            String message = fault.path("string").asText("The backend rejected the transaction");
+            return isEvaluatorUnavailable(message)
+                    ? ScriptEvaluation.unavailable(message)
+                    : ScriptEvaluation.failure(message);
+        }
+        JsonNode result = root.path("result");
         JsonNode failure = result.path("EvaluationFailure");
         if (!failure.isMissingNode()) {
             String message = failure.path("message").asText("Script evaluation failed");
@@ -732,8 +799,7 @@ public class YanoNodeClient {
         // declares application/cbor but detects an ASCII-hex payload and decodes
         // it (EvaluationResource.normalizeCborPayload).
         URI uri = baseUri.resolve("utils/txs/evaluate");
-        HttpRequest request = HttpRequest.newBuilder(uri)
-                .timeout(simulationTimeout())
+        HttpRequest request = request(uri, simulationTimeout())
                 .header("Content-Type", "application/cbor")
                 .header("Accept", "application/json")
                 .POST(HttpRequest.BodyPublishers.ofString(normaliseHexOrThrow(txHex)))
@@ -885,8 +951,7 @@ public class YanoNodeClient {
 
     private RawResponse getRaw(String path, Duration timeout) {
         URI uri = baseUri.resolve(path);
-        HttpRequest request = HttpRequest.newBuilder(uri)
-                .timeout(timeout)
+        HttpRequest request = request(uri, timeout)
                 .header("Accept", "application/json")
                 .GET()
                 .build();
@@ -895,8 +960,7 @@ public class YanoNodeClient {
 
     private RawResponse postRaw(String path, String body, String contentType, Duration timeout) {
         URI uri = baseUri.resolve(path);
-        HttpRequest request = HttpRequest.newBuilder(uri)
-                .timeout(timeout)
+        HttpRequest request = request(uri, timeout)
                 .header("Content-Type", contentType)
                 .header("Accept", "application/json")
                 .POST(HttpRequest.BodyPublishers.ofString(body))
@@ -941,10 +1005,34 @@ public class YanoNodeClient {
      * timeout, …). Lets callers distinguish "absent" from "node error" without a
      * fragile status-string match.
      */
+    /**
+     * A failure message that names the likely cause instead of a bare status.
+     *
+     * <p>Both of these are ordinary on a hosted backend and neither is obvious
+     * from the number: 403 is almost always the credential (missing, wrong, or
+     * for another network — the service checks that itself), and 429 is a rate
+     * limit, which is a wait rather than a fault. Hosted Blockfrost publishes no
+     * rate-limit headers, so there is nothing to pace against and this is the
+     * only place the condition can be named (ADR-043 §8).
+     *
+     * <p>The credential travels in a header, never the URI, so echoing the URI
+     * here cannot leak it.
+     */
+    private String describeFailure(String method, URI uri, int status) {
+        String base = method + " " + uri + " failed with status " + status;
+        return switch (status) {
+            case 401, 403 -> base + " — the backend rejected the API key."
+                    + " Check it is set, correct, and issued for this network.";
+            case 429 -> base + " — the backend is rate-limiting this wallet. Wait a moment"
+                    + " and try again; a busy screen (account discovery in particular) can"
+                    + " outrun a hosted plan's limit.";
+            default -> base;
+        };
+    }
+
     private JsonNode getJsonOrNull(String path) {
         URI uri = baseUri.resolve(path);
-        HttpRequest request = HttpRequest.newBuilder(uri)
-                .timeout(requestTimeout)
+        HttpRequest request = request(uri, requestTimeout)
                 .header("Accept", "application/json")
                 .GET()
                 .build();
@@ -954,7 +1042,7 @@ public class YanoNodeClient {
                 return null;
             }
             if (response.statusCode() != 200) {
-                throw new NodeClientException("GET " + uri + " failed with status " + response.statusCode());
+                throw new NodeClientException(describeFailure("GET", uri, response.statusCode()));
             }
             return objectMapper.readTree(response.body());
         } catch (IOException e) {
@@ -967,15 +1055,14 @@ public class YanoNodeClient {
 
     private JsonNode getJson(String path) {
         URI uri = baseUri.resolve(path);
-        HttpRequest request = HttpRequest.newBuilder(uri)
-                .timeout(requestTimeout)
+        HttpRequest request = request(uri, requestTimeout)
                 .header("Accept", "application/json")
                 .GET()
                 .build();
         try {
             HttpResponse<String> response = httpClient.send(request, HttpResponse.BodyHandlers.ofString());
             if (response.statusCode() != 200) {
-                throw new NodeClientException("GET " + uri + " failed with status " + response.statusCode());
+                throw new NodeClientException(describeFailure("GET", uri, response.statusCode()));
             }
             return objectMapper.readTree(response.body());
         } catch (IOException e) {

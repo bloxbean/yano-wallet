@@ -56,11 +56,17 @@ public enum WalletNetwork {
     }
 
     /**
-     * True when this network is served by a Blockfrost-compatible backend rather
-     * than a Yano node (ADR-038): no {@code /status}, no {@code /genesis}, so the
-     * network cannot be verified and is taken from this explicit choice.
+     * True when this network can only be served by a Blockfrost-compatible
+     * backend the wallet cannot launch — the DevKit entry, which exists to
+     * declare yaci-store (ADR-038).
+     *
+     * <p>Not a flavor accessor. Flavor moved to {@link BackendFlavor} on the
+     * connection (ADR-043 §2) once the same network could be reached through a
+     * Yano node or through hosted Blockfrost; asking a <em>network</em> which
+     * backend serves it stopped having an answer. This asks the one question
+     * that is still about the network: whether the wallet can run a node for it.
      */
-    public boolean blockfrostFlavor() {
+    public boolean requiresExternalBackend() {
         return this == YACI_DEVKIT;
     }
 
