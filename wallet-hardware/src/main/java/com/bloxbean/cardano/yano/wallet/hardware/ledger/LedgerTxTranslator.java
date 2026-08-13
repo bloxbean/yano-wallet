@@ -71,10 +71,24 @@ public final class LedgerTxTranslator {
      *                       required signers to the key path form
      * @param paymentPath    the payment path ({@code 1852'/1815'/account'/0/0})
      */
+    /**
+     * @param stakeKeyHash this wallet's stake key hash, or null when unknown —
+     *                     needed to tell OUR stake credential from a dApp's, since
+     *                     ours must go to the device as a derivation path and must
+     *                     also be added to the signing paths so a witness comes back
+     * @param stakePath    the derivation for {@code stakeKeyHash}
+     */
     public record Context(int networkId, long protocolMagic, Set<String> ownedInputs,
-                          byte[] paymentKeyHash, long[] paymentPath) {
+                          byte[] paymentKeyHash, long[] paymentPath,
+                          byte[] stakeKeyHash, long[] stakePath) {
         public Context {
             ownedInputs = ownedInputs == null ? Set.of() : Set.copyOf(ownedInputs);
+        }
+
+        /** Backwards-compatible form for callers with no stake credential to offer. */
+        public Context(int networkId, long protocolMagic, Set<String> ownedInputs,
+                       byte[] paymentKeyHash, long[] paymentPath) {
+            this(networkId, protocolMagic, ownedInputs, paymentKeyHash, paymentPath, null, null);
         }
     }
 
@@ -92,6 +106,10 @@ public final class LedgerTxTranslator {
             throw new UnsupportedTxException("Transaction body is not a CBOR map");
         }
 
+        // Set when a certificate or withdrawal names THIS wallet's stake credential:
+        // the device then needs the stake path among the signing paths, or it returns
+        // no witness for it and the transaction is short a signature.
+        boolean[] usesOurStakeKey = {false};
         LedgerSignRequest.Builder request = LedgerSignRequest.builder()
                 .networkId(ctx.networkId()).protocolMagic(ctx.protocolMagic());
         boolean tagCborSets = false;
@@ -155,10 +173,12 @@ public final class LedgerTxTranslator {
                 }
                 case KEY_TREASURY -> request.treasury(toBigInteger(value));
                 case KEY_DONATION -> request.donation(toBigInteger(value));
-                case KEY_CERTS -> throw new UnsupportedTxException(
-                        "This dApp transaction contains certificates — not supported with a hardware wallet yet.");
-                case KEY_WITHDRAWALS -> throw new UnsupportedTxException(
-                        "This dApp transaction contains reward withdrawals — not supported with a hardware wallet yet.");
+                case KEY_CERTS -> {
+                    tagCborSets |= hasSetTag(value);
+                    request.certificates(readCertificates(value, ctx, usesOurStakeKey));
+                }
+                case KEY_WITHDRAWALS ->
+                        request.withdrawals(readWithdrawals(value, ctx, usesOurStakeKey));
                 case KEY_VOTING_PROCEDURES -> throw new UnsupportedTxException(
                         "This dApp transaction contains governance votes — not supported with a hardware wallet yet.");
                 case KEY_PROPOSAL_PROCEDURES -> throw new UnsupportedTxException(
@@ -178,8 +198,19 @@ public final class LedgerTxTranslator {
         // The payment path witnesses when the wallet owns an input (or collateral),
         // or is explicitly a required signer.
         boolean ownsInput = ownsAny(inputs, ctx) || ownsAny(collateral, ctx);
-        if (ownsInput || requiredSignerIsOurs) {
-            request.signingPaths(List.of(ctx.paymentPath()));
+        if (ownsInput || requiredSignerIsOurs || usesOurStakeKey[0]) {
+            List<long[]> paths = new ArrayList<>();
+            if (ownsInput || requiredSignerIsOurs) {
+                paths.add(ctx.paymentPath());
+            }
+            if (usesOurStakeKey[0]) {
+                if (ctx.stakePath() == null) {
+                    throw new UnsupportedTxException("This transaction acts on this wallet's stake"
+                            + " credential, but no stake derivation path is available to sign with.");
+                }
+                paths.add(ctx.stakePath());
+            }
+            request.signingPaths(paths);
         } else {
             throw new UnsupportedTxException(
                     "This transaction has nothing for this wallet to sign (no owned inputs or required signers).");
@@ -215,6 +246,20 @@ public final class LedgerTxTranslator {
     private static boolean hasSetTag(DataItem item) {
         // A tag-258 set is still an Array in cbor-java; the tag rides on the item.
         return item.getTag() != null && item.getTag().getValue() == TAG_CBOR_SET;
+    }
+
+    private static Map asMap(DataItem item, String what) {
+        if (!(item instanceof Map map)) {
+            throw new UnsupportedTxException("Expected a map for " + what);
+        }
+        return map;
+    }
+
+    private static long toLong(DataItem item, String what) {
+        if (!(item instanceof Number n)) {
+            throw new UnsupportedTxException("Expected an integer for " + what);
+        }
+        return n.getValue().longValue();
     }
 
     private static Array asArray(DataItem item, String what) {
@@ -365,4 +410,136 @@ public final class LedgerTxTranslator {
         }
         return byteString.getBytes();
     }
+
+    /**
+     * dApp certificates (E4). Only the forms whose device payload we can build
+     * exactly; anything else keeps this class's contract of refusing in plain
+     * language rather than guessing.
+     *
+     * <p>The credential is the part that matters here. The wallet's own staking
+     * flows always pass a key <em>path</em>, because the credential is one it
+     * derives — and until now that was the only form the device layer could emit.
+     * A dApp's certificates are usually over a script credential it owns, so they
+     * need the hash forms, whose wire bytes were taken from ledgerjs
+     * ({@code utils/serialize.ts#serializeCredential}): key-path 0, script-hash 1,
+     * key-hash 2. That ordering is not guessable — the v8 interaction path uses a
+     * different one for the same concept.
+     */
+    private static List<byte[]> readCertificates(DataItem value, Context ctx,
+                                                boolean[] usesOurStakeKey) {
+        List<byte[]> certs = new ArrayList<>();
+        for (DataItem item : asArray(value, "certificates").getDataItems()) {
+            List<DataItem> fields = asArray(item, "certificate").getDataItems();
+            if (fields.isEmpty()) {
+                throw new UnsupportedTxException("Empty certificate in this transaction.");
+            }
+            int type = (int) toLong(fields.get(0), "certificate type");
+            switch (type) {
+                case 0, 1 -> {
+                    requireFields(fields, 2, type);
+                    certs.add(LedgerCardanoApp.certLegacyRegistration(
+                            type == 0, readCredential(fields.get(1), ctx, usesOurStakeKey)));
+                }
+                case 2 -> {
+                    requireFields(fields, 3, type);
+                    certs.add(LedgerCardanoApp.certDelegation(
+                            readCredential(fields.get(1), ctx, usesOurStakeKey),
+                            bytes28(fields.get(2), "pool key hash")));
+                }
+                case 7, 8 -> {
+                    // Conway registration/deregistration: the deposit is explicit,
+                    // and the device wants it after the credential.
+                    requireFields(fields, 3, type);
+                    certs.add(LedgerCardanoApp.certConwayRegistration(
+                            type == 7, readCredential(fields.get(1), ctx, usesOurStakeKey),
+                            toBigInteger(fields.get(2))));
+                }
+                default -> throw new UnsupportedTxException(
+                        "This dApp transaction contains a certificate of type " + type
+                                + ", which this wallet cannot yet show on a hardware device.");
+            }
+        }
+        return certs;
+    }
+
+    /**
+     * dApp reward withdrawals (E4): {@code coin || credential}, keyed by reward
+     * address. The address header's high nibble says whether the credential is a
+     * script (0xF0) or a key (0xE0); the remaining 28 bytes are the hash.
+     */
+    private static List<byte[]> readWithdrawals(DataItem value, Context ctx,
+                                               boolean[] usesOurStakeKey) {
+        List<byte[]> withdrawals = new ArrayList<>();
+        Map map = asMap(value, "withdrawals");
+        for (DataItem key : map.getKeys()) {
+            byte[] rewardAddress = ((ByteString) key).getBytes();
+            if (rewardAddress.length != 29) {
+                throw new UnsupportedTxException(
+                        "A reward address in this transaction is not 29 bytes — refusing to sign.");
+            }
+            byte[] hash = java.util.Arrays.copyOfRange(rewardAddress, 1, 29);
+            boolean script = (rewardAddress[0] & 0xF0) == 0xF0;
+            long[] ourPath = ourStakeHash(ctx, hash);
+            if (ourPath != null) {
+                usesOurStakeKey[0] = true;
+            }
+            byte[] credential = ourPath != null
+                    ? LedgerCardanoApp.credentialFromPath(ourPath)
+                    : LedgerCardanoApp.credentialFromHash(
+                            script ? LedgerCardanoApp.CREDENTIAL_SCRIPT_HASH
+                                   : LedgerCardanoApp.CREDENTIAL_KEY_HASH, hash);
+            withdrawals.add(LedgerCardanoApp.withdrawalFromCredential(
+                    toBigInteger(map.get(key)), credential));
+        }
+        return withdrawals;
+    }
+
+    /**
+     * A stake credential as the device wants it. Ours goes as a path so the device
+     * can show the user a derivation it recognises and prove the key is theirs;
+     * anyone else's goes as a bare hash.
+     */
+    private static byte[] readCredential(DataItem item, Context ctx, boolean[] usesOurStakeKey) {
+        List<DataItem> parts = asArray(item, "stake credential").getDataItems();
+        if (parts.size() != 2) {
+            throw new UnsupportedTxException("Malformed stake credential in a certificate.");
+        }
+        int kind = (int) toLong(parts.get(0), "credential kind");
+        byte[] hash = bytes28(parts.get(1), "credential hash");
+        long[] ourPath = ourStakeHash(ctx, hash);
+        if (ourPath != null) {
+            usesOurStakeKey[0] = true;
+            return LedgerCardanoApp.credentialFromPath(ourPath);
+        }
+        return switch (kind) {
+            case 0 -> LedgerCardanoApp.credentialFromHash(LedgerCardanoApp.CREDENTIAL_KEY_HASH, hash);
+            case 1 -> LedgerCardanoApp.credentialFromHash(LedgerCardanoApp.CREDENTIAL_SCRIPT_HASH, hash);
+            default -> throw new UnsupportedTxException(
+                    "Unknown stake credential kind " + kind + " in a certificate.");
+        };
+    }
+
+    /** The wallet's own stake path when {@code hash} is its stake key, else null. */
+    private static long[] ourStakeHash(Context ctx, byte[] hash) {
+        if (ctx.stakeKeyHash() != null && java.util.Arrays.equals(ctx.stakeKeyHash(), hash)) {
+            return ctx.stakePath();
+        }
+        return null;
+    }
+
+    private static void requireFields(List<DataItem> fields, int expected, int certType) {
+        if (fields.size() != expected) {
+            throw new UnsupportedTxException("Certificate type " + certType + " has "
+                    + fields.size() + " fields, expected " + expected + " — refusing to sign.");
+        }
+    }
+
+    private static byte[] bytes28(DataItem item, String what) {
+        byte[] b = ((ByteString) item).getBytes();
+        if (b.length != 28) {
+            throw new UnsupportedTxException(what + " must be 28 bytes");
+        }
+        return b;
+    }
+
 }

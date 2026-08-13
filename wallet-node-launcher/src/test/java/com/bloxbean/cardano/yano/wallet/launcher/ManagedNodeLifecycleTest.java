@@ -6,6 +6,7 @@ import org.junit.jupiter.api.io.TempDir;
 
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.util.List;
 import java.time.Duration;
 
 import static org.assertj.core.api.Assertions.assertThat;
@@ -40,7 +41,7 @@ class ManagedNodeLifecycleTest {
         Path jar = buildSleeperJar();
         NodeLaunchSpec spec = new NodeLaunchSpec(WalletNetwork.DEVNET, jar, false, tempDir,
                 FreePort.find(), FreePort.find(), tempDir.resolve("cs"),
-                tempDir.resolve("node.log"), NodeLocator.resolveJavaExecutable());
+                tempDir.resolve("node.log"), NodeLocator.resolveJavaExecutable(), List.of());
         ManagedNode node = new ManagedNode(spec);
         try {
             // The sleeper never serves REST, so a short await must time out (not hang).
@@ -57,7 +58,7 @@ class ManagedNodeLifecycleTest {
         Path jar = buildSleeperJar();
         NodeLaunchSpec spec = new NodeLaunchSpec(WalletNetwork.DEVNET, jar, false, tempDir,
                 FreePort.find(), FreePort.find(), tempDir.resolve("cs"),
-                tempDir.resolve("node.log"), NodeLocator.resolveJavaExecutable());
+                tempDir.resolve("node.log"), NodeLocator.resolveJavaExecutable(), List.of());
         ManagedNode node = new ManagedNode(spec);
         Thread starter = new Thread(() -> node.startAndAwaitReady(Duration.ofSeconds(60)));
         starter.start();

@@ -50,10 +50,21 @@ public class WalletBackendManager implements AutoCloseable {
     private volatile ActiveConnection active;
     private volatile Runnable onReconnect;
 
+    private final RelaySettingsStore relaySettings;
+
     public WalletBackendManager(Path dataDirRoot) {
         this.dataDirRoot = dataDirRoot.toAbsolutePath().normalize();
         this.connectionFile = this.dataDirRoot.resolve("connection.json");
+        this.relaySettings = new RelaySettingsStore(this.dataDirRoot);
         warnIfTemporary(this.dataDirRoot);
+    }
+
+    /**
+     * The upstream relay overrides (E18). Exposed so settings can show and edit
+     * them; changes take effect the next time a node is launched.
+     */
+    RelaySettingsStore relaySettings() {
+        return relaySettings;
     }
 
     /**
@@ -170,7 +181,8 @@ public class WalletBackendManager implements AutoCloseable {
         Path nodeData = dataDirRoot.resolve(network.id()).resolve("node");
         Path chainstate = nodeData.resolve("chainstate");
         Path logFile = nodeData.resolve("node.log");
-        NodeLaunchSpec spec = NodeLocator.autoDetectDevJar(network, chainstate, logFile, httpPort, n2nPort)
+        NodeLaunchSpec spec = NodeLocator.autoDetectDevJar(network, chainstate, logFile, httpPort, n2nPort,
+                        relaySettings.relaysFor(network))
                 .orElseThrow(() -> new IllegalStateException(
                         "Could not find a Yano node to run. Fetch the pinned release with "
                                 + "'./gradlew fetchYanoNode', or point at an existing one with "

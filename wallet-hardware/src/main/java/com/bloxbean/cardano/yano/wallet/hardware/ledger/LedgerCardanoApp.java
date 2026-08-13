@@ -17,6 +17,9 @@ import java.util.List;
  */
 public final class LedgerCardanoApp {
 
+    private static final org.slf4j.Logger log =
+            org.slf4j.LoggerFactory.getLogger(LedgerCardanoApp.class);
+
     /** Class byte of the Cardano app. */
     public static final int CLA = 0xD7;
 
@@ -192,11 +195,31 @@ public final class LedgerCardanoApp {
     public static final int REQUIRED_SIGNER_HASH = 0x01;
     // Certificate types (classic; Conway variants start at 7).
     public static final int CERT_STAKE_REGISTRATION = 0x00;
+    public static final int CERT_STAKE_DEREGISTRATION = 0x01;
     public static final int CERT_STAKE_DELEGATION = 0x02;
+    /**
+     * Conway registration/deregistration. Distinct device certificate types from
+     * the legacy 0/1 because they carry an explicit deposit, and they happen to
+     * match the CBOR certificate types of the same name.
+     */
+    public static final int CERT_STAKE_REGISTRATION_CONWAY = 0x07;
+    public static final int CERT_STAKE_DEREGISTRATION_CONWAY = 0x08;
     /** Conway vote-delegation certificate (CIP-1694): delegate voting power to a DRep. */
     public static final int CERT_VOTE_DELEGATION = 0x09;
     /** Credential encoded as a BIP32 key path. */
+    /**
+     * Credential wire types, as ledgerjs {@code utils/serialize.ts#serializeCredential}
+     * writes them — the byte IS the {@code CredentialType} enum value.
+     *
+     * <p>Verified against the reference rather than inferred: the v8 interaction
+     * path has its OWN {@code CredentialWireType} with different numbers
+     * ({@code KEY_HASH=0, SCRIPT_HASH=1, KEY_PATH=2}), and the DRep target uses a
+     * third enum again ({@code DREP_KEY_HASH=0, DREP_SCRIPT_HASH=1}). Three enums,
+     * three orderings, one byte on the wire — do not pattern-match between them.
+     */
     private static final int CREDENTIAL_KEY_PATH = 0x00;
+    public static final int CREDENTIAL_SCRIPT_HASH = 0x01;
+    public static final int CREDENTIAL_KEY_HASH = 0x02;
     // DRep target discriminators used by serializeDRep.
     public static final int DREP_KEY_HASH = 0x00;
     public static final int DREP_SCRIPT_HASH = 0x01;
@@ -234,6 +257,14 @@ public final class LedgerCardanoApp {
      * plus one Ed25519 witness per {@code signingPaths} entry. The returned
      * {@code txHashHex} MUST equal the host's blake2b-256 of the tx body — that
      * equality is the correctness gate.
+     *
+     * <p><b>This stage order is load-bearing.</b> The device is a state machine
+     * and answers {@code 0x6E06} if a stage arrives early — reordering it broke
+     * delegation on real hardware, with the device rejecting certificates that
+     * had been moved ahead of fee and ttl. Verify against the CALL SEQUENCE in
+     * ledgerjs {@code interactions/v7/signTx.ts} (the generator body), not the
+     * order its stage constants happen to be declared in: those differ, and
+     * reading the declarations is exactly how this got broken once.
      *
      * @param signingPaths  BIP32 paths to witness (payment for inputs, stake for
      *                      certs/withdrawals)
@@ -284,6 +315,12 @@ public final class LedgerCardanoApp {
      * the host's CBOR exactly, the hashes differ and the caller must not submit.
      */
     public LedgerSignedTx signTransaction(LedgerSignRequest r) {
+        log.info("Ledger signTx: mode={} inputs={} outputs={} certs={} withdrawals={} mint={}"
+                        + " collateral={} requiredSigners={} refInputs={} signingPaths={}",
+                r.signingMode(), r.inputs().size(), r.outputs().size(), r.certificates().size(),
+                r.withdrawals().size(), r.mint() == null ? 0 : r.mint().size(),
+                r.collateralInputs().size(), r.requiredSigners().size(),
+                r.referenceInputs().size(), r.signingPaths().size());
         exchangeStage(STAGE_INIT, 0x00, serializeTxInit(r));
 
         // Modern apps take auxiliary data before the body.
@@ -534,6 +571,76 @@ public final class LedgerCardanoApp {
         return out.toByteArray();
     }
 
+    /**
+     * A stake credential owned by someone else — a script, or a key we do not
+     * derive. {@code hash} is the 28-byte script or key hash.
+     *
+     * <p>This is what a dApp's certificates and withdrawals carry. The wallet's own
+     * staking flows use the key-path form instead, because there the credential IS
+     * a path we can derive and the device shows the user a path it recognises.
+     */
+    public static byte[] credentialFromHash(int credentialType, byte[] hash) {
+        if (credentialType != CREDENTIAL_SCRIPT_HASH && credentialType != CREDENTIAL_KEY_HASH) {
+            throw new IllegalArgumentException("Not a hash credential type: " + credentialType);
+        }
+        if (hash == null || hash.length != 28) {
+            throw new IllegalArgumentException("credential hash must be 28 bytes");
+        }
+        ByteArrayOutputStream out = new ByteArrayOutputStream();
+        out.write(credentialType);
+        out.writeBytes(hash);
+        return out.toByteArray();
+    }
+
+    /** The key-path credential form, for credentials this wallet derives. */
+    public static byte[] credentialFromPath(long[] stakePath) {
+        ByteArrayOutputStream out = new ByteArrayOutputStream();
+        out.write(CREDENTIAL_KEY_PATH);
+        out.writeBytes(LedgerBip32.serialize(stakePath));
+        return out.toByteArray();
+    }
+
+    /**
+     * Conway stake registration/deregistration over an arbitrary credential:
+     * {@code type(7|8) || credential || coin(deposit)}.
+     */
+    public static byte[] certConwayRegistration(boolean register, byte[] credential,
+                                                BigInteger deposit) {
+        ByteArrayOutputStream out = new ByteArrayOutputStream();
+        out.write(register ? CERT_STAKE_REGISTRATION_CONWAY : CERT_STAKE_DEREGISTRATION_CONWAY);
+        out.writeBytes(credential);
+        out.writeBytes(uint64(deposit));
+        return out.toByteArray();
+    }
+
+    /** Legacy stake registration/deregistration: {@code type(0|1) || credential}. */
+    public static byte[] certLegacyRegistration(boolean register, byte[] credential) {
+        ByteArrayOutputStream out = new ByteArrayOutputStream();
+        out.write(register ? CERT_STAKE_REGISTRATION : CERT_STAKE_DEREGISTRATION);
+        out.writeBytes(credential);
+        return out.toByteArray();
+    }
+
+    /** Stake delegation over an arbitrary credential: {@code type(2) || credential || poolKeyHash(28)}. */
+    public static byte[] certDelegation(byte[] credential, byte[] poolKeyHash) {
+        if (poolKeyHash == null || poolKeyHash.length != 28) {
+            throw new IllegalArgumentException("poolKeyHash must be 28 bytes");
+        }
+        ByteArrayOutputStream out = new ByteArrayOutputStream();
+        out.write(CERT_STAKE_DELEGATION);
+        out.writeBytes(credential);
+        out.writeBytes(poolKeyHash);
+        return out.toByteArray();
+    }
+
+    /** Withdrawal over an arbitrary credential: {@code coin(8) || credential}. */
+    public static byte[] withdrawalFromCredential(BigInteger amount, byte[] credential) {
+        ByteArrayOutputStream out = new ByteArrayOutputStream();
+        out.writeBytes(uint64(amount));
+        out.writeBytes(credential);
+        return out.toByteArray();
+    }
+
     /** Withdrawal payload: {@code coin(8) || credentialType(0=key-path) || stakePath}. */
     public static byte[] withdrawal(BigInteger amount, long[] stakePath) {
         ByteArrayOutputStream out = new ByteArrayOutputStream();
@@ -609,9 +716,46 @@ public final class LedgerCardanoApp {
     private byte[] exchangeStage(int p1, int p2, byte[] data) {
         ApduResponse response = transport.exchange(new ApduCommand(CLA, INS_SIGN_TX, p1, p2, data));
         if (!response.isOk()) {
-            throw new HardwareWalletException(describeStatus(response.statusWord()));
+            // Name the stage. The device is streamed a transaction in ~20 stages
+            // and stops at the first it dislikes, so WHICH one failed is the whole
+            // diagnosis — without it, a rejection is a status word and a shrug, and
+            // the only way to find the offending field is to sign progressively
+            // richer transactions on real hardware until one breaks.
+            log.warn("Ledger rejected signTx stage {} (0x{}) with status 0x{}: {} bytes sent",
+                    stageName(p1), String.format("%02x", p1),
+                    String.format("%04x", response.statusWord() & 0xFFFF), data.length);
+            throw new HardwareWalletException(describeStatus(response.statusWord())
+                    + " [stage: " + stageName(p1) + "]");
         }
         return response.data();
+    }
+
+    /** Human name for a signTx P1 stage, for errors and logs. */
+    static String stageName(int p1) {
+        return switch (p1) {
+            case STAGE_INIT -> "init";
+            case STAGE_INPUTS -> "inputs";
+            case STAGE_OUTPUTS -> "outputs";
+            case STAGE_FEE -> "fee";
+            case STAGE_TTL -> "ttl";
+            case STAGE_CERTIFICATES -> "certificates";
+            case STAGE_WITHDRAWALS -> "withdrawals";
+            case STAGE_AUX_DATA -> "auxiliary data";
+            case STAGE_VALIDITY_INTERVAL_START -> "validity interval start";
+            case STAGE_MINT -> "mint";
+            case STAGE_SCRIPT_DATA_HASH -> "script data hash";
+            case STAGE_COLLATERAL_INPUTS -> "collateral inputs";
+            case STAGE_REQUIRED_SIGNERS -> "required signers";
+            case STAGE_COLLATERAL_OUTPUT -> "collateral output";
+            case STAGE_TOTAL_COLLATERAL -> "total collateral";
+            case STAGE_REFERENCE_INPUTS -> "reference inputs";
+            case STAGE_VOTING_PROCEDURES -> "voting procedures";
+            case STAGE_TREASURY -> "treasury";
+            case STAGE_DONATION -> "donation";
+            case STAGE_CONFIRM -> "confirm";
+            case STAGE_WITNESSES -> "witnesses";
+            default -> "unknown(0x" + String.format("%02x", p1) + ")";
+        };
     }
 
     /** INIT payload for an ordinary tx with no certs/withdrawals/mint/collateral (Conway-aware app). */
@@ -773,13 +917,31 @@ public final class LedgerCardanoApp {
         return out;
     }
 
-    /** Maps common Cardano-app status words to actionable messages. */
+    /**
+     * Maps Cardano-app status words to actionable messages.
+     *
+     * <p>The 0x6Exx range is the app's own, and the distinction inside it is the
+     * one that matters when something goes wrong: whether the USER declined,
+     * whether the device's policy declined, or whether the host sent something the
+     * device could not parse. Those are three different bugs, and reporting them
+     * all as a raw hex code — as this did — costs a debugging round every time.
+     * Values from ledgerjs {@code errors/deviceStatusError.ts}.
+     */
     static String describeStatus(int statusWord) {
         return switch (statusWord) {
             case 0x6E00, 0x6D00 -> "Open the Cardano app on your Ledger and try again";
-            case 0x5515 -> "Unlock your Ledger and try again";
+            case 0x5515, 0x6E11 -> "Unlock your Ledger and try again";
             case 0x6982 -> "Device rejected the request (security status not satisfied)";
-            case 0x6985, 0x5001 -> "Request was rejected on the device";
+            case 0x6985, 0x5001, 0x6E09 -> "Request was rejected on the device";
+            case 0x6E10 -> "The Ledger's policy refused this transaction — it may contain something "
+                    + "the device will not sign without different settings";
+            case 0x6E07 -> "The Ledger could not read part of this transaction (invalid data). This "
+                    + "is a wallet-side translation problem, not something you can fix on the device "
+                    + "— please report the transaction.";
+            case 0x6E08 -> "The Ledger rejected a derivation path in this transaction";
+            case 0x6E12 -> "This transaction uses an address type the Ledger does not support";
+            case 0x6E01 -> "The Ledger rejected the request header (malformed APDU)";
+            case 0x6E04 -> "The Ledger is still completing a previous call — try again";
             default -> "Device returned error status 0x" + String.format("%04x", statusWord & 0xFFFF);
         };
     }

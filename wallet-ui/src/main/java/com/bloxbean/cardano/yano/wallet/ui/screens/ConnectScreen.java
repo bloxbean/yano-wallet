@@ -17,6 +17,7 @@ import javafx.scene.control.ProgressBar;
 import javafx.scene.control.ProgressIndicator;
 import javafx.scene.control.TextArea;
 import javafx.scene.control.TextField;
+import javafx.scene.control.TitledPane;
 import javafx.scene.control.ToggleButton;
 import javafx.scene.control.ToggleGroup;
 import javafx.scene.layout.HBox;
@@ -54,6 +55,8 @@ public class ConnectScreen {
     /** Escape hatch from an in-flight attempt — without it a saved connection is a trap. */
     private final Button cancelButton = new Button("Change network");
     private final Label statusLabel = new Label();
+    /** Collapsed relay editor, hidden for networks with no relays to set (E18). */
+    private final TitledPane relayPane = new TitledPane("Upstream relays", new VBox());
     private final ProgressIndicator spinner = new ProgressIndicator();
 
     // Managed-node startup progress (hidden until a managed connect is running).
@@ -176,8 +179,10 @@ public class ConnectScreen {
                 managedToggle.setSelected(true);
             }
             updateManagedHint(managedHint, network);
+            refreshRelayPane(network);
         });
         updateManagedHint(managedHint, networkPicker.getValue());
+        refreshRelayPane(networkPicker.getValue());
 
         connectButton.getStyleClass().add("primary-button");
         connectButton.setMaxWidth(Double.MAX_VALUE);
@@ -197,13 +202,41 @@ public class ConnectScreen {
 
         buildStartupBox();
 
+        relayPane.setExpanded(false);
         VBox card = Ui.card("Node connection",
                 Ui.muted("Network"), networkPicker,
                 modeRow, managedHint, urlField,
-                connectButton, cancelButton, statusRow, startupBox);
+                connectButton, cancelButton, statusRow, startupBox, relayPane);
 
         content.getChildren().setAll(brand, tagline, card);
         prefillAndMaybeAutoConnect();
+    }
+
+    /**
+     * Rebuilds the relay pane for the selected network (E18).
+     *
+     * <p>Here, and not only in Settings, because this is where it is needed most:
+     * if a network's relays have stopped resolving, the alternative is committing
+     * to a start that cannot succeed and then hunting for the fix. Node readiness
+     * is deliberately "the REST API answers" rather than "the chain is advancing",
+     * so a user in that state can still get in — but fixing it before is better
+     * than fixing it after.
+     *
+     * <p>Hidden entirely when the network has no relays to set, rather than shown
+     * with an explanation as in Settings: this screen is the first thing a new
+     * user sees, and it should not open with a note about a thing they cannot
+     * configure and have not asked about.
+     */
+    private void refreshRelayPane(String network) {
+        // Keyed off whether the network HAS relays, not whether they apply to the
+        // connection in force. On this screen the user is choosing what to do
+        // next, so the previous connection's mode is beside the point.
+        boolean applicable = network != null
+                && !controller.upstreamRelays(network).shipped().isEmpty();
+        setManagedVisible(relayPane, applicable);
+        if (applicable) {
+            relayPane.setContent(RelayEditor.build(controller, network, null));
+        }
     }
 
     /**

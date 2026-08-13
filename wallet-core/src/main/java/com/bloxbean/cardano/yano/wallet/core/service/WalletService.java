@@ -411,7 +411,11 @@ public class WalletService {
             com.bloxbean.cardano.client.quicktx.Tx tx = new com.bloxbean.cardano.client.quicktx.Tx()
                     .mintAssets(policy, asset, account.baseAddress())
                     .from(account.baseAddress());
-            return signStakeTx(tx, account, "mint:" + quantity + " " + assetName);
+            // Payment key only: the policy above is a ScriptPubkey over this
+            // account's PAYMENT key, and nothing in a mint touches the stake
+            // credential. This used to go through signStakeTx, which added a stake
+            // witness that no validator asked for and the user paid for.
+            return signComposedTx(tx, account, "mint:" + quantity + " " + assetName, null);
         }
 
         private QuickAdaTxDraft signStakeTx(com.bloxbean.cardano.client.quicktx.Tx tx,
@@ -436,12 +440,19 @@ public class WalletService {
                                                com.bloxbean.cardano.client.function.TxSigner extraSigner) {
             var builder = new com.bloxbean.cardano.client.quicktx.QuickTxBuilder(
                     utxoSupplier, protocolParamsSupplier, transactionProcessor);
-            com.bloxbean.cardano.client.transaction.spec.Transaction signed = builder.compose(tx)
+            var composed = builder.compose(tx)
                     .feePayer(signerAccount.baseAddress())
                     .withSigner(com.bloxbean.cardano.client.function.helper.SignerProviders
-                            .signerFrom(signerAccount))
-                    .withSigner(extraSigner)
-                    .buildAndSign();
+                            .signerFrom(signerAccount));
+            // A null extra signer means the payment key alone authorizes this
+            // transaction. Adding one anyway is not free: QuickTx sizes the fee
+            // around the signers it is given, so an unnecessary witness costs the
+            // user roughly 4,600 lovelace and puts a key on chain that had no
+            // business being there.
+            if (extraSigner != null) {
+                composed = composed.withSigner(extraSigner);
+            }
+            com.bloxbean.cardano.client.transaction.spec.Transaction signed = composed.buildAndSign();
             byte[] cbor;
             try {
                 cbor = signed.serialize();

@@ -50,7 +50,12 @@ final class HardwareDappSigner {
         LedgerSignRequest request = LedgerTxTranslator.translate(txCbor,
                 new LedgerTxTranslator.Context(network.networkId(), network.protocolMagic(),
                         ownedInputs, paymentKeyHash,
-                        LedgerBip32.paymentPath(profile.accountIndex(), 0, 0)));
+                        LedgerBip32.paymentPath(profile.accountIndex(), 0, 0),
+                        // The stake credential too (E4): a dApp certificate or
+                        // withdrawal may act on it, and then the device needs the
+                        // path to return a witness for it.
+                        new CIP1852().getPublicKeyFromAccountPubKey(accountXpub, 2, 0).getKeyHash(),
+                        LedgerBip32.stakePath(profile.accountIndex())));
 
         List<HardwareDevice> devices = hardware.enumerate();
         if (devices.isEmpty()) {

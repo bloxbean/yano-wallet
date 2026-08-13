@@ -1,10 +1,12 @@
 package com.bloxbean.cardano.yano.wallet.launcher;
 
+import com.bloxbean.cardano.yano.wallet.core.config.UpstreamRelay;
 import com.bloxbean.cardano.yano.wallet.core.config.WalletNetwork;
 
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.Paths;
+import java.util.List;
 import java.util.Optional;
 
 /**
@@ -26,8 +28,19 @@ public final class NodeLocator {
     /** Locates the node artifact and derives the working directory beside it. */
     public static Optional<NodeLaunchSpec> autoDetectDevJar(WalletNetwork network, Path chainstateDir,
                                                             Path logFile, int httpPort, int n2nPort) {
+        return autoDetectDevJar(network, chainstateDir, logFile, httpPort, n2nPort, List.of());
+    }
+
+    /**
+     * As above, with the upstream relays to sync from (E18). An empty list means
+     * the network's shipped defaults; callers that hold a user override pass the
+     * resolved list, custom entries first.
+     */
+    public static Optional<NodeLaunchSpec> autoDetectDevJar(WalletNetwork network, Path chainstateDir,
+                                                            Path logFile, int httpPort, int n2nPort,
+                                                            List<UpstreamRelay> relays) {
         return findNodeJar().map(jar -> new NodeLaunchSpec(network, jar, false, workingDirFor(jar),
-                httpPort, n2nPort, chainstateDir, logFile, resolveJavaExecutable()));
+                httpPort, n2nPort, chainstateDir, logFile, resolveJavaExecutable(), relays));
     }
 
     /**

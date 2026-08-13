@@ -1,8 +1,10 @@
 package com.bloxbean.cardano.yano.wallet.launcher;
 
+import com.bloxbean.cardano.yano.wallet.core.config.UpstreamRelay;
 import com.bloxbean.cardano.yano.wallet.core.config.WalletNetwork;
 
 import java.nio.file.Path;
+import java.util.List;
 import java.util.Objects;
 
 /**
@@ -19,7 +21,8 @@ public record NodeLaunchSpec(
         int n2nPort,         // node-to-node port (default 13400; NOT 13337)
         Path chainstateDir,  // isolated chainstate for this managed node
         Path logFile,        // node stdout/stderr capture
-        String javaExecutable // "java" or an absolute path; ignored for native
+        String javaExecutable, // "java" or an absolute path; ignored for native
+        List<UpstreamRelay> relays // upstream relays, best first; empty → the network's defaults
 ) {
     /** Managed-node defaults: REST 8090, N2N 13400 — clear of a default Yano's 7070/13337. */
     public static final int DEFAULT_HTTP_PORT = 8090;
@@ -35,6 +38,13 @@ public record NodeLaunchSpec(
             throw new IllegalArgumentException("ports must be positive");
         }
         javaExecutable = javaExecutable == null || javaExecutable.isBlank() ? "java" : javaExecutable;
+        // An empty list means "no preference", not "no upstream". Launching a node
+        // with zero relays configured would leave it unable to sync at all, which
+        // is a worse failure than any relay we could have picked — so fall back to
+        // the network's defaults rather than honouring the emptiness.
+        relays = relays == null || relays.isEmpty()
+                ? network.defaultRelays()
+                : List.copyOf(relays);
     }
 
     public String baseUrl() {

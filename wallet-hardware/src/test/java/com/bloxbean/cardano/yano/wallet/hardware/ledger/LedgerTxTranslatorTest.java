@@ -15,6 +15,7 @@ import com.bloxbean.cardano.client.transaction.spec.TransactionOutput;
 import com.bloxbean.cardano.client.transaction.spec.TransactionWitnessSet;
 import com.bloxbean.cardano.client.transaction.spec.Value;
 import com.bloxbean.cardano.client.transaction.spec.cert.StakeCredential;
+import com.bloxbean.cardano.client.transaction.spec.cert.PoolRetirement;
 import com.bloxbean.cardano.client.transaction.spec.cert.StakeRegistration;
 import com.bloxbean.cardano.client.util.HexUtil;
 import org.junit.jupiter.api.Test;
@@ -147,15 +148,47 @@ class LedgerTxTranslatorTest {
     }
 
     @Test
-    void certificates_areRejectedWithAClearMessage() throws Exception {
+    void aCertificateOverSomeoneElsesKeyGoesAsAHashCredential() throws Exception {
+        // E4. Wire bytes from ledgerjs utils/serialize.ts#serializeCredential:
+        // type(0=legacy registration) || credentialType(2=key hash) || hash(28).
         TransactionBody body = baseBody()
                 .certs(List.of(new StakeRegistration(StakeCredential.fromKeyHash(keyHash(2)))))
                 .build();
-        byte[] cbor = serialize(body);
 
-        assertThatThrownBy(() -> LedgerTxTranslator.translate(cbor, context()))
+        LedgerSignRequest request = LedgerTxTranslator.translate(serialize(body), context());
+
+        assertThat(request.certificates()).hasSize(1);
+        byte[] cert = request.certificates().get(0);
+        assertThat(cert[0]).as("legacy stake registration").isEqualTo((byte) 0x00);
+        assertThat(cert[1]).as("credential type: key hash").isEqualTo((byte) 0x02);
+        assertThat(cert).hasSize(2 + 28);
+    }
+
+    @Test
+    void aScriptCredentialCertificateUsesTheScriptHashType() throws Exception {
+        // The CIP-113 shape. script-hash is 1, NOT 2 — the v8 interaction path in
+        // ledgerjs numbers the same concept differently, so this is pinned.
+        TransactionBody body = baseBody()
+                .certs(List.of(new StakeRegistration(StakeCredential.fromScriptHash(keyHash(3)))))
+                .build();
+
+        LedgerSignRequest request = LedgerTxTranslator.translate(serialize(body), context());
+
+        byte[] cert = request.certificates().get(0);
+        assertThat(cert[1]).as("credential type: script hash").isEqualTo((byte) 0x01);
+    }
+
+    @Test
+    void anUnknownCertificateTypeIsStillRefusedInPlainLanguage() throws Exception {
+        // The translator's contract is unchanged for anything we cannot build
+        // exactly: refuse with a reason, never guess at device bytes.
+        TransactionBody body = baseBody()
+                .certs(List.of(new PoolRetirement(keyHash(4), 300)))
+                .build();
+
+        assertThatThrownBy(() -> LedgerTxTranslator.translate(serialize(body), context()))
                 .isInstanceOf(LedgerTxTranslator.UnsupportedTxException.class)
-                .hasMessageContaining("certificates");
+                .hasMessageContaining("certificate of type");
     }
 
     @Test

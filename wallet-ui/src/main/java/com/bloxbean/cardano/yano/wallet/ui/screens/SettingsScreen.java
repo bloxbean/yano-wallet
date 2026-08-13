@@ -17,11 +17,15 @@ import javafx.scene.control.PasswordField;
 import javafx.scene.control.RadioButton;
 import javafx.scene.control.ScrollPane;
 import javafx.scene.control.TextArea;
+import javafx.scene.control.TitledPane;
 import javafx.scene.control.ToggleGroup;
 import javafx.scene.layout.HBox;
 import javafx.scene.control.TextField;
 import javafx.scene.layout.StackPane;
 import javafx.scene.layout.VBox;
+
+import java.util.Arrays;
+import java.util.List;
 
 /** Node connection, wallet info, and connected dApps. */
 public class SettingsScreen implements Shell.Screen {
@@ -113,14 +117,26 @@ public class SettingsScreen implements Shell.Screen {
         Button refreshLog = new Button("Refresh");
         refreshLog.getStyleClass().add("ghost-button");
         refreshLog.setOnAction(e -> loadNodeLog());
-        VBox advancedCard = Ui.card("Advanced",
+        // Named for what it holds rather than "Advanced", which tells the user
+        // nothing about whether their problem is in here. "Managed node" is the
+        // term the rest of the wallet already uses — a second word for the same
+        // thing would be worse than a vague one. Panes are collapsed: this is
+        // configuration and diagnostics, findable without being in the way.
+        TitledPane filesPane = new TitledPane("Node database and logs", new VBox(8,
                 Ui.muted("Data directory (wallets + node database)"),
                 dataDirLine,
                 Ui.muted("The wallet's own log is wallet.log in that directory, and the managed "
                         + "node's is <network>/node/node.log — attach both when reporting a problem."),
                 Ui.muted("Managed node log (last 100 lines)"),
                 refreshLog,
-                nodeLog);
+                nodeLog));
+        filesPane.setExpanded(false);
+
+        TitledPane relaysPane = new TitledPane("Upstream relays",
+                RelayEditor.build(controller, controller.networkId(), null));
+        relaysPane.setExpanded(false);
+
+        VBox advancedCard = Ui.card("Managed node", relaysPane, filesPane);
 
         VBox column = new VBox(16, title, appearanceCard(), nodeCard, walletCard, securityCard,
                 dappsCard, connectorCard, advancedCard);

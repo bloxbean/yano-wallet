@@ -8,6 +8,7 @@ import com.bloxbean.cardano.client.transaction.spec.governance.DRep;
 import com.bloxbean.cardano.client.transaction.spec.governance.DRepType;
 import com.bloxbean.cardano.client.transaction.spec.governance.Vote;
 import com.bloxbean.cardano.client.util.HexUtil;
+import com.bloxbean.cardano.yano.wallet.core.config.UpstreamRelay;
 import com.bloxbean.cardano.yano.wallet.core.config.WalletNetwork;
 import com.bloxbean.cardano.yano.wallet.core.service.HistoryPort;
 import com.bloxbean.cardano.yano.wallet.core.service.NodeStatusPort;
@@ -683,6 +684,67 @@ public class DefaultWalletUiController implements WalletUiController {
         }
         var current = store.settings();
         return new ConnectorSettingsView(current.transport(), current.wsPort(), store.isWeakTransport());
+    }
+
+    @Override
+    public UpstreamRelaysView upstreamRelays(String networkId) {
+        WalletNetwork network = WalletNetwork.fromId(networkId);
+        RelaySettingsStore store = backendManager.relaySettings();
+        return new UpstreamRelaysView(
+                store.relaysFor(network).stream().map(Object::toString).toList(),
+                store.customRelaysFor(network).stream().map(Object::toString).toList(),
+                network.defaultRelays().stream().map(Object::toString).toList(),
+                store.isOnlyCustom(network),
+                relaysUnavailableReason(network) == null,
+                relaysUnavailableReason(network));
+    }
+
+    /**
+     * Why this network has no relays to configure, or {@code null} when it does.
+     *
+     * <p>Relays are launch arguments for a node the wallet starts, so all three
+     * cases here are variations of "the wallet is not the one choosing". Checked
+     * in order of what the user is most likely looking at: the connection they
+     * made overrides anything the network would otherwise allow.
+     */
+    private String relaysUnavailableReason(WalletNetwork network) {
+        WalletBackendManager.ActiveConnection connection = backendManager.active();
+        if (connection != null && connection.network() == network && !connection.config().isManaged()) {
+            // Keyed off the live connection rather than the network, because a
+            // public network reached through someone's own node is exactly the
+            // case a network-only check gets wrong.
+            return "You are connected to a node you run yourself, so the wallet is not choosing "
+                    + "relays — that node's own configuration decides where it syncs from.";
+        }
+        if (network.blockfrostFlavor()) {
+            return "A Yaci DevKit is reached over HTTP and has no wallet-managed node, so there are "
+                    + "no relays to set. Change its address when you connect instead.";
+        }
+        if (network.defaultRelays().isEmpty()) {
+            return "A Yano devnet produces its own blocks rather than syncing from relays, so there "
+                    + "is no upstream to configure.";
+        }
+        return null;
+    }
+
+    @Override
+    public String saveUpstreamRelays(String networkId, List<String> relays, boolean onlyCustom) {
+        WalletNetwork network = WalletNetwork.fromId(networkId);
+        // Parse every entry BEFORE saving any: a half-applied list would leave the
+        // node launching from something the user never approved.
+        List<UpstreamRelay> parsed = (relays == null ? List.<String>of() : relays).stream()
+                .filter(entry -> entry != null && !entry.isBlank())
+                .map(UpstreamRelay::parse)
+                .toList();
+        backendManager.relaySettings().save(network, parsed, onlyCustom);
+        if (parsed.isEmpty()) {
+            return "Using the built-in relays for " + network.displayName()
+                    + ". Restart the node for this to take effect.";
+        }
+        return "Saved " + parsed.size() + " relay" + (parsed.size() == 1 ? "" : "s")
+                + " for " + network.displayName()
+                + (onlyCustom ? " (built-in relays excluded)" : ", with the built-in relays as fallback")
+                + ". Restart the node for this to take effect.";
     }
 
     @Override
