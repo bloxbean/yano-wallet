@@ -4,6 +4,7 @@ import com.bloxbean.cardano.client.api.model.Result;
 import com.bloxbean.cardano.client.api.model.Utxo;
 import com.bloxbean.cardano.client.transaction.spec.Transaction;
 import com.bloxbean.cardano.client.transaction.spec.TransactionBody;
+import com.bloxbean.cardano.client.transaction.spec.TransactionInput;
 import com.bloxbean.cardano.client.transaction.spec.TransactionOutput;
 import com.bloxbean.cardano.client.util.HexUtil;
 import com.bloxbean.cardano.yano.wallet.connector.Cip30Exception;
@@ -12,7 +13,12 @@ import com.bloxbean.cardano.yano.wallet.core.service.WalletService;
 import com.bloxbean.cardano.yano.wallet.core.wallet.StoredWallet;
 
 import java.math.BigInteger;
+import java.time.Duration;
+import java.util.ArrayList;
+import java.util.LinkedHashMap;
 import java.util.List;
+import java.util.Locale;
+import java.util.Map;
 import java.util.function.Supplier;
 
 /**
@@ -23,9 +29,36 @@ import java.util.function.Supplier;
  */
 final class WalletCip30Wallet implements Cip30Wallet {
 
+    /**
+     * How long {@link #submitTx} will wait for a parent transaction to reach a
+     * block before giving up — see {@link #chainedParentAwaitingABlock}. Sized for
+     * one block plus slack (~20s on every network the wallet supports); the dApp
+     * sees a slow promise, and each CIP-30 connection has its own thread, so a wait
+     * here cannot hold up other calls.
+     *
+     * <p>REMOVE THIS WORKAROUND once bloxbean/yano#66 ships: when the node's
+     * mempool resolves inputs created by other mempool transactions, chained
+     * submits succeed first time and everything below becomes dead weight that
+     * silently swallows 45 seconds on a genuinely missing input.
+     */
+    private static final Duration CHAIN_WAIT = Duration.ofSeconds(45);
+    private static final Duration CHAIN_POLL = Duration.ofSeconds(2);
+
     private final WalletBackendManager backendManager;
     private final Supplier<WalletService.Session> session;
     private final HardwareDappSigner hardwareDappSigner = new HardwareDappSigner();
+    /**
+     * Transaction hashes this wallet submitted, newest last — the evidence that a
+     * missing input is one we are about to create rather than one that never
+     * existed. Bounded because a long-lived session must not accumulate them.
+     */
+    final Map<String, Boolean> submitted =
+            java.util.Collections.synchronizedMap(new LinkedHashMap<>(16, 0.75f, false) {
+                @Override
+                protected boolean removeEldestEntry(Map.Entry<String, Boolean> eldest) {
+                    return size() > 64;
+                }
+            });
 
     WalletCip30Wallet(WalletBackendManager backendManager, Supplier<WalletService.Session> session) {
         this.backendManager = backendManager;
@@ -110,24 +143,111 @@ final class WalletCip30Wallet implements Cip30Wallet {
     @Override
     public String submitTx(String txHex) {
         try {
-            Result<String> result = connection().backend().transactionProcessor()
-                    .submitTransaction(HexUtil.decodeHexString(txHex));
-            if (!result.isSuccessful()) {
-                throw Cip30Exception.internal("Node rejected the transaction: " + result.getResponse());
+            return submitOnce(txHex);
+        } catch (Cip30Exception first) {
+            TransactionInput parent = chainedParentAwaitingABlock(txHex, first);
+            if (parent == null || !awaitOnChain(parent)) {
+                throw first;
             }
-            String txHash = result.getValue();
-            // A dApp that submits THROUGH the wallet gives us a reliable "this tx
-            // is going on-chain" signal (unlike signTx, which a dApp may abandon),
-            // so record it locally now — it shows in history immediately instead of
-            // only after the node indexes the block. dApps that self-submit skip
-            // this path and simply appear once confirmed (expected).
-            recordPendingBestEffort(txHex, txHash);
-            return txHash;
-        } catch (Cip30Exception e) {
-            throw e;
+            // The parent is on chain now, so the input the node could not see
+            // exists. Resubmitting the same bytes is idempotent — same
+            // transaction, same hash — so the worst case is the identical error.
+            return submitOnce(txHex);
         } catch (Exception e) {
             throw Cip30Exception.internal("Failed to submit transaction: " + e.getMessage());
         }
+    }
+
+    private String submitOnce(String txHex) {
+        Result<String> result;
+        try {
+            result = connection().backend().transactionProcessor()
+                    .submitTransaction(HexUtil.decodeHexString(txHex));
+        } catch (Exception e) {
+            throw Cip30Exception.internal("Failed to submit transaction: " + e.getMessage());
+        }
+        if (!result.isSuccessful()) {
+            throw Cip30Exception.internal("Node rejected the transaction: " + result.getResponse());
+        }
+        String txHash = result.getValue();
+        // A dApp that submits THROUGH the wallet gives us a reliable "this tx
+        // is going on-chain" signal (unlike signTx, which a dApp may abandon),
+        // so record it locally now — it shows in history immediately instead of
+        // only after the node indexes the block. dApps that self-submit skip
+        // this path and simply appear once confirmed (expected).
+        recordPendingBestEffort(txHex, txHash);
+        submitted.put(txHash, Boolean.TRUE);
+        return txHash;
+    }
+
+    /**
+     * The input this transaction is waiting on, when the submit failed only
+     * because a parent transaction has not reached a block yet — or {@code null}
+     * when that is not what happened.
+     *
+     * <p>Yano's mempool admission resolves inputs against the persisted UTxO set
+     * alone, so a transaction spending an output of another transaction still in
+     * the mempool is refused with {@code UtxoNotFound} for the ~20s until the
+     * parent is included (bloxbean/yano#66). cardano-node accepts these, so a dApp
+     * that submits a chained pair back to back works everywhere except here. That
+     * is what broke a CIP-113 token registration on 2026-08-13: the setup
+     * transaction landed and the one spending its output was rejected.
+     *
+     * <p>Deliberately narrow. Both conditions must hold — the node said it could
+     * not find a UTxO, <em>and</em> this transaction spends an output of something
+     * this wallet itself submitted moments ago. Any other rejection, including a
+     * genuinely missing input, returns immediately as before.
+     */
+    // Package-private: the decision of WHEN to retry is the part worth pinning;
+    // the polling around it is mechanical.
+    TransactionInput chainedParentAwaitingABlock(String txHex, Cip30Exception failure) {
+        String message = failure.getMessage() == null ? "" : failure.getMessage().toLowerCase(Locale.ROOT);
+        if (!message.contains("utxonotfound") && !message.contains("not found")) {
+            return null;
+        }
+        try {
+            TransactionBody body = Transaction.deserialize(HexUtil.decodeHexString(txHex)).getBody();
+            List<TransactionInput> candidates = new ArrayList<>();
+            if (body.getInputs() != null) {
+                candidates.addAll(body.getInputs());
+            }
+            if (body.getCollateral() != null) {
+                candidates.addAll(body.getCollateral());
+            }
+            if (body.getReferenceInputs() != null) {
+                candidates.addAll(body.getReferenceInputs());
+            }
+            for (TransactionInput input : candidates) {
+                if (submitted.containsKey(input.getTransactionId())) {
+                    return input;
+                }
+            }
+        } catch (Exception e) {
+            return null; // unreadable CBOR is not a chaining problem
+        }
+        return null;
+    }
+
+    /** Polls until the outpoint resolves, or the budget runs out. */
+    private boolean awaitOnChain(TransactionInput input) {
+        long deadline = System.nanoTime() + CHAIN_WAIT.toNanos();
+        while (System.nanoTime() < deadline) {
+            try {
+                if (connection().backend().nodeClient()
+                        .getUtxo(input.getTransactionId(), input.getIndex()) != null) {
+                    return true;
+                }
+            } catch (RuntimeException e) {
+                // Could not ask — try again until the budget is spent.
+            }
+            try {
+                Thread.sleep(CHAIN_POLL.toMillis());
+            } catch (InterruptedException e) {
+                Thread.currentThread().interrupt();
+                return false;
+            }
+        }
+        return false;
     }
 
     /**
