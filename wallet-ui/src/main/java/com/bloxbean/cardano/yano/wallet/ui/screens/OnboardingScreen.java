@@ -46,6 +46,16 @@ public class OnboardingScreen {
      */
     private final ScrollPane formScroll = new ScrollPane(new StackPane(content));
     private final StackPane root = new StackPane();
+    /**
+     * Holds the warm-up banner above whichever view is showing, so the node's
+     * progress stays visible while the user moves between home, create, restore
+     * and unlock — the whole point of coming here before the node is ready.
+     */
+    private final BorderPane frame = new BorderPane();
+    private final NodeWarmupView warmup;
+    private final VBox warmupBanner = new VBox(8);
+    /** Unlock buttons disabled until the node is up; re-enabled together. */
+    private final List<Button> nodeGated = new ArrayList<>();
 
     public OnboardingScreen(WalletUiController controller, StackPane overlay,
                             Consumer<WalletUiController.WalletItem> onUnlocked) {
@@ -77,7 +87,74 @@ public class OnboardingScreen {
         formScroll.setFitToHeight(true);
         formScroll.getStyleClass().add("screen-scroll");
         root.getStyleClass().add("onboarding");
+        this.warmup = new NodeWarmupView(controller);
+        buildWarmupBanner();
+        frame.setTop(warmupBanner);
+        root.getChildren().setAll(frame);
         showHome();
+    }
+
+    /**
+     * A banner for the window between "the node process started" and "the node
+     * answers", which on a first start is over an hour.
+     *
+     * <p>The wallet comes here rather than making the user watch a spinner on the
+     * Connect screen, because everything this screen offers first — creating a
+     * wallet, restoring one, writing down a recovery phrase — is local and needs
+     * no chain at all. Opening a wallet does need it, so that waits, and the
+     * banner says so instead of leaving a dead button.
+     */
+    private void buildWarmupBanner() {
+        warmupBanner.setPadding(new Insets(16, 32, 0, 32));
+        warmupBanner.setVisible(false);
+        warmupBanner.setManaged(false);
+        if (controller.nodeReady()) {
+            return;
+        }
+        String networkName = controller.networkLabel(controller.networkId());
+        Label heading = new Label("Your local " + networkName + " node is still starting");
+        heading.getStyleClass().add("screen-title");
+        Label explain = Ui.muted("Create or restore a wallet now — that is all local. Opening a wallet "
+                + "needs the node, so it unlocks as soon as this finishes.");
+        explain.setWrapText(true);
+        warmupBanner.getChildren().setAll(Ui.card(null, heading, explain, warmup.root()));
+        warmupBanner.setVisible(true);
+        warmupBanner.setManaged(true);
+        warmup.start();
+
+        Ui.onFx(controller.awaitNodeReady(), ready -> onNodeReady(), error -> {
+            // The start failed or was aborted. Leave the banner up with the
+            // reason: the wallets already created here are safe on disk, and
+            // "Switch network" is the way out. The heading has to change too — a
+            // failure under "still starting" reads as something still in hand.
+            heading.setText("Your local " + networkName + " node stopped before it was ready");
+            explain.setText("Creating and restoring wallets still works. Opening one needs a node, "
+                    + "so try again or pick a different network.");
+            warmup.showFailure(error.getMessage(),
+                    "Wallets you created are saved. Use Switch network to try again.");
+        });
+    }
+
+    private void onNodeReady() {
+        warmup.stop();
+        warmupBanner.setVisible(false);
+        warmupBanner.setManaged(false);
+        nodeGated.forEach(button -> button.setDisable(false));
+        nodeGated.clear();
+    }
+
+    /**
+     * Marks a button as needing the node, disabling it until the node is up.
+     * Returns the button so it can be used inline.
+     */
+    private Button gateOnNode(Button button, String waitingTooltip) {
+        if (controller.nodeReady()) {
+            return button;
+        }
+        button.setDisable(true);
+        button.setTooltip(new Tooltip(waitingTooltip));
+        nodeGated.add(button);
+        return button;
     }
 
     public Node root() {
@@ -87,7 +164,7 @@ public class OnboardingScreen {
     /** Swaps the root to a centred, scrollable form view. */
     private void form(Node... nodes) {
         content.getChildren().setAll(nodes);
-        root.getChildren().setAll(formScroll);
+        frame.setCenter(formScroll);
         formScroll.setVvalue(0);
     }
 
@@ -144,7 +221,7 @@ public class OnboardingScreen {
         home.setCenter(listScroll);
         home.setBottom(actions);
         home.setMaxWidth(700);
-        root.getChildren().setAll(home);
+        frame.setCenter(home);
 
         Ui.onFx(controller.listWallets(), wallets -> {
             walletList.getChildren().clear();
@@ -232,7 +309,11 @@ public class OnboardingScreen {
         graphic.prefWidthProperty().bind(row.widthProperty().subtract(30));
 
         if (wallet.hardware()) {
-            // Hardware wallets have no passphrase — opening is device-present only.
+            // Hardware wallets have no passphrase — opening is device-present
+            // only, so the row IS the unlock and has to wait for the node.
+            // Software rows stay clickable: they lead to the unlock form, where
+            // the wait is explained and only the final button is held back.
+            gateOnNode(row, "Waiting for the local node to finish starting.");
             row.setOnAction(e -> {
                 row.setDisable(true);
                 Ui.onFx(controller.unlockHardware(wallet.walletId()), onUnlocked::accept, error -> {
@@ -477,6 +558,7 @@ public class OnboardingScreen {
         hide(keyNote);
         Button unlock = new Button("Unlock");
         unlock.getStyleClass().add("primary-button");
+        gateOnNode(unlock, "Waiting for the local node to finish starting — see the progress above.");
         Button back = backButton();
 
         // Learn upfront whether this wallet is protected by a security key so we

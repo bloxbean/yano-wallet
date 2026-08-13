@@ -23,9 +23,21 @@ class ManagedNodeLifecycleTest {
 
     /** A tiny runnable jar whose main just sleeps — a node that never becomes ready. */
     private Path buildSleeperJar() throws Exception {
+        return buildSleeperJar(false);
+    }
+
+    /**
+     * @param chatty print a line every 200ms, so the redirected log keeps growing.
+     *               That is what the launcher reads as "still making progress".
+     */
+    private Path buildSleeperJar(boolean chatty) throws Exception {
         Path src = tempDir.resolve("Sleeper.java");
-        Files.writeString(src, "public class Sleeper { public static void main(String[] a) throws Exception {"
-                + " Thread.sleep(600000); } }");
+        Files.writeString(src, chatty
+                ? "public class Sleeper { public static void main(String[] a) throws Exception {"
+                        + " for (int i = 0; ; i++) { System.out.println(\"Account history reconcile"
+                        + " progress: block \" + (i * 1000) + \"/4567221\"); Thread.sleep(200); } } }"
+                : "public class Sleeper { public static void main(String[] a) throws Exception {"
+                        + " Thread.sleep(600000); } }");
         Path classesDir = tempDir.resolve("classes");
         Files.createDirectories(classesDir);
         run(javaBin("javac"), src.toString(), "-d", classesDir.toString());
@@ -44,12 +56,45 @@ class ManagedNodeLifecycleTest {
                 tempDir.resolve("node.log"), NodeLocator.resolveJavaExecutable(), List.of());
         ManagedNode node = new ManagedNode(spec);
         try {
-            // The sleeper never serves REST, so a short await must time out (not hang).
+            // The sleeper never serves REST and never logs, so the silence window
+            // must fire (and not hang).
             assertThat(node.startAndAwaitReady(Duration.ofSeconds(3))).isFalse();
-            assertThat(node.failureReason()).contains("did not become ready");
+            assertThat(node.failureReason()).contains("wrote nothing to its log");
         } finally {
             node.close();
         }
+        assertThat(node.state()).isEqualTo(ManagedNode.State.STOPPED);
+    }
+
+    /**
+     * The timeout is a silence window, not a ceiling: a node still writing
+     * progress must survive well past it. Rebuilding the account-history index
+     * takes ~86 minutes on preview with no HTTP port bound, and the old fixed
+     * 45-minute cap killed exactly that — a working node, halfway through.
+     */
+    @Test
+    void aNodeStillWritingProgressOutlivesTheSilenceWindow() throws Exception {
+        Path jar = buildSleeperJar(true);
+        NodeLaunchSpec spec = new NodeLaunchSpec(WalletNetwork.DEVNET, jar, false, tempDir,
+                FreePort.find(), FreePort.find(), tempDir.resolve("cs"),
+                tempDir.resolve("node.log"), NodeLocator.resolveJavaExecutable(), List.of());
+        ManagedNode node = new ManagedNode(spec);
+        Thread starter = new Thread(() -> node.startAndAwaitReady(Duration.ofSeconds(2)));
+        starter.setDaemon(true);
+        starter.start();
+        try {
+            // Three silence windows' worth of wall clock; the log grows throughout.
+            Thread.sleep(6_000);
+            assertThat(node.state()).isEqualTo(ManagedNode.State.STARTING);
+            assertThat(node.failureReason()).isNull();
+            // And the progress it is writing is legible to the UI.
+            assertThat(node.progress().phase())
+                    .isEqualTo(NodeStartupProgress.Phase.RECONCILING_ACCOUNT_HISTORY);
+            assertThat(node.progress().current()).isPositive();
+        } finally {
+            node.close();
+        }
+        starter.join(10_000);
         assertThat(node.state()).isEqualTo(ManagedNode.State.STOPPED);
     }
 

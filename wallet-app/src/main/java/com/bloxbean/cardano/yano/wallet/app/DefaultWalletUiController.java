@@ -58,6 +58,20 @@ public class DefaultWalletUiController implements WalletUiController {
                 thread.setDaemon(true);
                 return thread;
             });
+    /**
+     * Runs the wait for a managed node's REST API. Separate from
+     * {@link #executor} on purpose: that wait can last over an hour, and the
+     * single backend thread has to stay free for the local screens the user is
+     * using meanwhile.
+     */
+    private final ExecutorService nodeStartup =
+            Executors.newSingleThreadExecutor(r -> {
+                Thread thread = new Thread(r, "wallet-node-startup");
+                thread.setDaemon(true);
+                return thread;
+            });
+    /** Completes when the in-flight connection's node answers; null if none. */
+    private volatile CompletableFuture<ConnectionInfo> nodeReady;
     private final Map<String, QuickAdaTxDraft> drafts = new ConcurrentHashMap<>();
     private final HardwareSendService hardwareSend = new HardwareSendService();
     private final HardwareStakeService hardwareStake = new HardwareStakeService();
@@ -137,12 +151,38 @@ public class DefaultWalletUiController implements WalletUiController {
 
     @Override
     public CompletableFuture<ConnectionInfo> connectManaged(String networkId) {
+        return startManaged(com.bloxbean.cardano.yano.wallet.core.config
+                .WalletConnectionConfig.managed(WalletNetwork.fromId(networkId)));
+    }
+
+    /**
+     * Phase 1 of a managed connect: spawn the node and hand back a connection
+     * that already serves local work, then wait for the node's API in the
+     * background.
+     *
+     * <p>The wait runs on {@link #nodeStartup}, never on {@link #executor}. That
+     * is the whole point: the executor is a single thread and every screen's
+     * work queues on it, so a connect that occupied it for the duration of an
+     * 86-minute index rebuild left the UI with nothing to do but spin.
+     */
+    private CompletableFuture<ConnectionInfo> startManaged(
+            com.bloxbean.cardano.yano.wallet.core.config.WalletConnectionConfig config) {
         return async(() -> {
-            var conn = backendManager.connect(com.bloxbean.cardano.yano.wallet.core.config
-                    .WalletConnectionConfig.managed(WalletNetwork.fromId(networkId)));
-            return new ConnectionInfo("MANAGED", conn.network().id(),
-                    conn.backend().nodeClient().baseUrl(), true);
+            phaseStartedMs.clear(); // a new start times its phases from scratch
+            var conn = backendManager.beginManagedConnect(config);
+            // A node that was already up connects fully in one step; there is no
+            // second half to wait for.
+            nodeReady = conn.nodeReady()
+                    ? CompletableFuture.completedFuture(info(conn))
+                    : CompletableFuture.supplyAsync(
+                            () -> info(backendManager.completeManagedConnect(config)), nodeStartup);
+            return info(conn);
         });
+    }
+
+    private static ConnectionInfo info(WalletBackendManager.ActiveConnection conn) {
+        return new ConnectionInfo(conn.config().mode().name(), conn.network().id(),
+                conn.baseUrl(), conn.config().isManaged());
     }
 
     @Override
@@ -150,20 +190,42 @@ public class DefaultWalletUiController implements WalletUiController {
         return async(() -> {
             var conn = backendManager.connect(com.bloxbean.cardano.yano.wallet.core.config
                     .WalletConnectionConfig.external(WalletNetwork.fromId(networkId), baseUrl));
-            return new ConnectionInfo("EXTERNAL", conn.network().id(),
-                    conn.backend().nodeClient().baseUrl(), false);
+            nodeReady = CompletableFuture.completedFuture(info(conn));
+            return info(conn);
         });
     }
 
     @Override
     public CompletableFuture<ConnectionInfo> reconnectSaved() {
+        var config = backendManager.savedConfig()
+                .orElseThrow(() -> new IllegalStateException("No saved connection"));
+        if (config.isManaged()) {
+            return startManaged(config);
+        }
         return async(() -> {
-            var config = backendManager.savedConfig()
-                    .orElseThrow(() -> new IllegalStateException("No saved connection"));
             var conn = backendManager.connect(config);
-            return new ConnectionInfo(config.mode().name(), conn.network().id(),
-                    conn.backend().nodeClient().baseUrl(), config.isManaged());
+            nodeReady = CompletableFuture.completedFuture(info(conn));
+            return info(conn);
         });
+    }
+
+    @Override
+    public boolean nodeReady() {
+        return backendManager.isConnected();
+    }
+
+    @Override
+    public CompletableFuture<Void> awaitNodeReady() {
+        CompletableFuture<ConnectionInfo> pending = nodeReady;
+        if (pending == null) {
+            // Nothing is connecting: either we are already up (nothing to wait
+            // for) or there is no attempt to attach to.
+            return backendManager.isConnected()
+                    ? CompletableFuture.completedFuture(null)
+                    : CompletableFuture.failedFuture(
+                            new IllegalStateException("No connection attempt is in progress"));
+        }
+        return pending.thenApply(info -> null);
     }
 
     @Override
@@ -194,6 +256,25 @@ public class DefaultWalletUiController implements WalletUiController {
         return connection().service();
     }
 
+    /**
+     * Refuses to open a session while the node is still starting.
+     *
+     * <p>Not a limitation of unlocking itself — that is a local vault operation —
+     * but of what a session IS: {@code WalletService.Session} belongs to the
+     * service that created it, and during warm-up that service has no node
+     * behind it. A session opened then would keep the dead suppliers for its
+     * whole life, so every balance and every send from it would fail even after
+     * the node came up. Unlocking is also the doorway to the shell, which needs
+     * the chain anyway, so waiting here costs nothing that was usable.
+     */
+    private void requireNodeForSession() {
+        if (!backendManager.isConnected()) {
+            throw new com.bloxbean.cardano.yano.wallet.core.service.NodeNotReadyException(
+                    "The local node is still starting. Your wallet is saved and ready — it opens as "
+                            + "soon as the node finishes.");
+        }
+    }
+
     private com.bloxbean.cardano.yano.wallet.nodeclient.YanoNodePorts ports() {
         return connection().backend().ports();
     }
@@ -207,7 +288,7 @@ public class DefaultWalletUiController implements WalletUiController {
     @Override
     public String nodeBaseUrl() {
         WalletBackendManager.ActiveConnection conn = backendManager.active();
-        return conn != null ? conn.backend().nodeClient().baseUrl() : "";
+        return conn != null ? conn.baseUrl() : "";
     }
 
     @Override
@@ -226,31 +307,78 @@ public class DefaultWalletUiController implements WalletUiController {
     @Override
     public CompletableFuture<NodeStartupView> nodeStartupStatus() {
         // Lock-free read on the common pool — NOT the single-thread backend
-        // executor, which a long connectManaged() occupies for the whole sync.
+        // executor, which the rest of the UI is using while the node starts.
         return io(() -> {
             var snapshot = backendManager.managedNodeStatus().orElse(null);
             if (snapshot == null) {
-                return new NodeStartupView("PREPARING", "Preparing to start the node…",
-                        0, false, false, null);
+                return NodeStartupView.indeterminate("PREPARING", "Preparing to start the node…");
             }
             String state = snapshot.state();
             if ("FAILED".equals(state)) {
                 String reason = snapshot.failureReason() != null
                         ? snapshot.failureReason() : "The node failed to start.";
-                return new NodeStartupView("FAILED", reason, 0, false, true, reason);
+                return new NodeStartupView("FAILED", reason, 0, 0, -1, 0, false, true, reason);
             }
             if ("RUNNING".equals(state)) {
-                return new NodeStartupView("READY", "Node is up — finishing the connection…",
-                        0, true, false, null);
+                return NodeStartupView.indeterminate("READY", "Node is up — finishing the connection…")
+                        .asReachable();
             }
-            // STARTING / STOPPED: the process is spawning or booting its API. On a
-            // public network the first start also builds the wallet index.
-            return new NodeStartupView("STARTING",
-                    "Starting the node and waiting for its API. On a public network the first start "
-                            + "also builds the wallet index, which can take several minutes.",
-                    0, false, false, null);
+            // STARTING / STOPPED: spawning, booting, or working through a startup
+            // phase. Report the phase and position the node itself is logging —
+            // without it a rebuild that legitimately runs for over an hour is
+            // indistinguishable from a hang, which is exactly how it was read.
+            return startingView(snapshot);
         });
     }
+
+    /**
+     * Turns a node-log progress snapshot into something the Connect screen can
+     * show, including a remaining-time estimate once enough of the phase has
+     * elapsed to make one meaningful.
+     */
+    private NodeStartupView startingView(WalletBackendManager.ManagedNodeStatus snapshot) {
+        long current = snapshot.current();
+        long total = snapshot.total();
+        if (current <= 0 || total <= 0) {
+            return NodeStartupView.indeterminate("STARTING",
+                    "Starting the node and waiting for its API. On a public network the first start "
+                            + "also builds the wallet index, which can take a long time.");
+        }
+        long now = System.currentTimeMillis();
+        PhaseStart start = phaseStartedMs.computeIfAbsent(snapshot.phase(),
+                phase -> new PhaseStart(now, current));
+        // Rate is measured over what we WATCHED, not over the phase's whole
+        // position. Attaching to a node that is already at block 3M — a second
+        // connect attempt, or a reconnect to a node left running — would
+        // otherwise credit those 3M blocks to the few seconds we have been
+        // looking, and promise a finish that is an order of magnitude too soon.
+        long observed = current - start.fromBlock();
+        long elapsed = now - start.atMs();
+        long remainingSeconds = 0;
+        if (elapsed > 10_000 && observed > 0) {
+            double blocksPerSecond = observed / (elapsed / 1000.0);
+            remainingSeconds = Math.round((total - current) / blocksPerSecond);
+        }
+        double fraction = (double) current / total;
+        String detail = snapshot.detail() + ": " + NUMBER_FORMAT.format(current)
+                + " of " + NUMBER_FORMAT.format(total) + " blocks";
+        return new NodeStartupView("STARTING", detail, current, total, fraction,
+                remainingSeconds, false, false, null);
+    }
+
+    private static final java.text.NumberFormat NUMBER_FORMAT =
+            java.text.NumberFormat.getIntegerInstance();
+    /** When a startup phase was first seen, and where it was then. */
+    private record PhaseStart(long atMs, long fromBlock) {
+    }
+
+    /**
+     * First sighting of each startup phase, for the remaining-time estimate. Per
+     * phase because their rates differ by orders of magnitude, so carrying an
+     * earlier phase's timing into a later one would poison its first estimates.
+     * Cleared when a new connection starts.
+     */
+    private final Map<String, PhaseStart> phaseStartedMs = new ConcurrentHashMap<>();
 
     @Override
     public CompletableFuture<List<String>> nodeLogTail(int maxLines) {
@@ -451,6 +579,7 @@ public class DefaultWalletUiController implements WalletUiController {
     @Override
     public CompletableFuture<WalletItem> unlockHardware(String walletId) {
         return async(() -> {
+            requireNodeForSession();
             WalletService.Session unlocked = service().unlockWatchOnly(walletId);
             session = unlocked;
             WalletItem item = toItem(unlocked.profile());
@@ -462,6 +591,7 @@ public class DefaultWalletUiController implements WalletUiController {
     @Override
     public CompletableFuture<WalletItem> unlock(String walletId, char[] passphrase) {
         return async(() -> {
+            requireNodeForSession();
             WalletService.Session unlocked = service().unlock(walletId, passphrase);
             session = unlocked;
             WalletItem item = toItem(unlocked.profile());
@@ -503,6 +633,7 @@ public class DefaultWalletUiController implements WalletUiController {
             if (factors.isEmpty()) {
                 throw new IllegalStateException("This wallet is not protected by a security key");
             }
+            requireNodeForSession();
             VaultSecondFactor factor = buildFactor(kindOf(factors.get(0).type()), pinProvider, onTouch);
             WalletService.Session unlocked = service().unlock(walletId, passphrase, factor);
             session = unlocked;
