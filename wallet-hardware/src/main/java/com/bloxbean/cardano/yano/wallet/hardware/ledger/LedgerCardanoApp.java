@@ -192,11 +192,31 @@ public final class LedgerCardanoApp {
     public static final int REQUIRED_SIGNER_HASH = 0x01;
     // Certificate types (classic; Conway variants start at 7).
     public static final int CERT_STAKE_REGISTRATION = 0x00;
+    public static final int CERT_STAKE_DEREGISTRATION = 0x01;
     public static final int CERT_STAKE_DELEGATION = 0x02;
+    /**
+     * Conway registration/deregistration. Distinct device certificate types from
+     * the legacy 0/1 because they carry an explicit deposit, and they happen to
+     * match the CBOR certificate types of the same name.
+     */
+    public static final int CERT_STAKE_REGISTRATION_CONWAY = 0x07;
+    public static final int CERT_STAKE_DEREGISTRATION_CONWAY = 0x08;
     /** Conway vote-delegation certificate (CIP-1694): delegate voting power to a DRep. */
     public static final int CERT_VOTE_DELEGATION = 0x09;
     /** Credential encoded as a BIP32 key path. */
+    /**
+     * Credential wire types, as ledgerjs {@code utils/serialize.ts#serializeCredential}
+     * writes them — the byte IS the {@code CredentialType} enum value.
+     *
+     * <p>Verified against the reference rather than inferred: the v8 interaction
+     * path has its OWN {@code CredentialWireType} with different numbers
+     * ({@code KEY_HASH=0, SCRIPT_HASH=1, KEY_PATH=2}), and the DRep target uses a
+     * third enum again ({@code DREP_KEY_HASH=0, DREP_SCRIPT_HASH=1}). Three enums,
+     * three orderings, one byte on the wire — do not pattern-match between them.
+     */
     private static final int CREDENTIAL_KEY_PATH = 0x00;
+    public static final int CREDENTIAL_SCRIPT_HASH = 0x01;
+    public static final int CREDENTIAL_KEY_HASH = 0x02;
     // DRep target discriminators used by serializeDRep.
     public static final int DREP_KEY_HASH = 0x00;
     public static final int DREP_SCRIPT_HASH = 0x01;
@@ -531,6 +551,76 @@ public final class LedgerCardanoApp {
         out.write(optionFlag(true));
         out.writeBytes(hash);
         out.writeBytes(url.getBytes(java.nio.charset.StandardCharsets.US_ASCII));
+        return out.toByteArray();
+    }
+
+    /**
+     * A stake credential owned by someone else — a script, or a key we do not
+     * derive. {@code hash} is the 28-byte script or key hash.
+     *
+     * <p>This is what a dApp's certificates and withdrawals carry. The wallet's own
+     * staking flows use the key-path form instead, because there the credential IS
+     * a path we can derive and the device shows the user a path it recognises.
+     */
+    public static byte[] credentialFromHash(int credentialType, byte[] hash) {
+        if (credentialType != CREDENTIAL_SCRIPT_HASH && credentialType != CREDENTIAL_KEY_HASH) {
+            throw new IllegalArgumentException("Not a hash credential type: " + credentialType);
+        }
+        if (hash == null || hash.length != 28) {
+            throw new IllegalArgumentException("credential hash must be 28 bytes");
+        }
+        ByteArrayOutputStream out = new ByteArrayOutputStream();
+        out.write(credentialType);
+        out.writeBytes(hash);
+        return out.toByteArray();
+    }
+
+    /** The key-path credential form, for credentials this wallet derives. */
+    public static byte[] credentialFromPath(long[] stakePath) {
+        ByteArrayOutputStream out = new ByteArrayOutputStream();
+        out.write(CREDENTIAL_KEY_PATH);
+        out.writeBytes(LedgerBip32.serialize(stakePath));
+        return out.toByteArray();
+    }
+
+    /**
+     * Conway stake registration/deregistration over an arbitrary credential:
+     * {@code type(7|8) || credential || coin(deposit)}.
+     */
+    public static byte[] certConwayRegistration(boolean register, byte[] credential,
+                                                BigInteger deposit) {
+        ByteArrayOutputStream out = new ByteArrayOutputStream();
+        out.write(register ? CERT_STAKE_REGISTRATION_CONWAY : CERT_STAKE_DEREGISTRATION_CONWAY);
+        out.writeBytes(credential);
+        out.writeBytes(uint64(deposit));
+        return out.toByteArray();
+    }
+
+    /** Legacy stake registration/deregistration: {@code type(0|1) || credential}. */
+    public static byte[] certLegacyRegistration(boolean register, byte[] credential) {
+        ByteArrayOutputStream out = new ByteArrayOutputStream();
+        out.write(register ? CERT_STAKE_REGISTRATION : CERT_STAKE_DEREGISTRATION);
+        out.writeBytes(credential);
+        return out.toByteArray();
+    }
+
+    /** Stake delegation over an arbitrary credential: {@code type(2) || credential || poolKeyHash(28)}. */
+    public static byte[] certDelegation(byte[] credential, byte[] poolKeyHash) {
+        if (poolKeyHash == null || poolKeyHash.length != 28) {
+            throw new IllegalArgumentException("poolKeyHash must be 28 bytes");
+        }
+        ByteArrayOutputStream out = new ByteArrayOutputStream();
+        out.write(CERT_STAKE_DELEGATION);
+        out.writeBytes(credential);
+        out.writeBytes(poolKeyHash);
+        return out.toByteArray();
+    }
+
+    /** Withdrawal over an arbitrary credential: {@code coin(8) || credential}. */
+    public static byte[] withdrawalFromCredential(BigInteger amount, byte[] credential) {
+        ByteArrayOutputStream out = new ByteArrayOutputStream();
+        out.writeBytes(uint64(amount));
+        out.writeBytes(credential);
         return out.toByteArray();
     }
 
