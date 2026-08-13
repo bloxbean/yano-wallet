@@ -863,13 +863,31 @@ public final class LedgerCardanoApp {
         return out;
     }
 
-    /** Maps common Cardano-app status words to actionable messages. */
+    /**
+     * Maps Cardano-app status words to actionable messages.
+     *
+     * <p>The 0x6Exx range is the app's own, and the distinction inside it is the
+     * one that matters when something goes wrong: whether the USER declined,
+     * whether the device's policy declined, or whether the host sent something the
+     * device could not parse. Those are three different bugs, and reporting them
+     * all as a raw hex code — as this did — costs a debugging round every time.
+     * Values from ledgerjs {@code errors/deviceStatusError.ts}.
+     */
     static String describeStatus(int statusWord) {
         return switch (statusWord) {
             case 0x6E00, 0x6D00 -> "Open the Cardano app on your Ledger and try again";
-            case 0x5515 -> "Unlock your Ledger and try again";
+            case 0x5515, 0x6E11 -> "Unlock your Ledger and try again";
             case 0x6982 -> "Device rejected the request (security status not satisfied)";
-            case 0x6985, 0x5001 -> "Request was rejected on the device";
+            case 0x6985, 0x5001, 0x6E09 -> "Request was rejected on the device";
+            case 0x6E10 -> "The Ledger's policy refused this transaction — it may contain something "
+                    + "the device will not sign without different settings";
+            case 0x6E07 -> "The Ledger could not read part of this transaction (invalid data). This "
+                    + "is a wallet-side translation problem, not something you can fix on the device "
+                    + "— please report the transaction.";
+            case 0x6E08 -> "The Ledger rejected a derivation path in this transaction";
+            case 0x6E12 -> "This transaction uses an address type the Ledger does not support";
+            case 0x6E01 -> "The Ledger rejected the request header (malformed APDU)";
+            case 0x6E04 -> "The Ledger is still completing a previous call — try again";
             default -> "Device returned error status 0x" + String.format("%04x", statusWord & 0xFFFF);
         };
     }
