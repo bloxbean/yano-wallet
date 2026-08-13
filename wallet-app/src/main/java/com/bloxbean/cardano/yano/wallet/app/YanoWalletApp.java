@@ -1,5 +1,7 @@
 package com.bloxbean.cardano.yano.wallet.app;
 
+import com.bloxbean.cardano.yano.wallet.core.config.BackendFlavor;
+import com.bloxbean.cardano.yano.wallet.core.config.BlockfrostEndpoints;
 import com.bloxbean.cardano.yano.wallet.core.config.WalletConnectionConfig;
 import com.bloxbean.cardano.yano.wallet.core.config.WalletNetwork;
 import com.bloxbean.cardano.yano.wallet.ui.YanoWalletApplication;
@@ -68,14 +70,23 @@ public final class YanoWalletApp {
         boolean screenshotRun = screenshot != null;
 
         // CLI pre-seed (verification / power users): --node=managed|external,
-        // --network=…, --base-url=… (external), --managed-port=N.
+        // --network=…, --base-url=… (external), --api-key=… (hosted backend),
+        // --managed-port=N.
         String nodeMode = opts.get("node");
         if (nodeMode != null && opts.containsKey("network")) {
             WalletNetwork network = WalletNetwork.fromId(opts.get("network"));
             WalletConnectionConfig config;
             if ("external".equalsIgnoreCase(nodeMode)) {
-                config = WalletConnectionConfig.external(network,
-                        opts.getOrDefault("base-url", "http://localhost:7070/api/v1/"));
+                // --api-key is optional and only meaningful here: a hosted
+                // backend needs one, a local node ignores it (ADR-043).
+                String baseUrl = opts.getOrDefault("base-url", "http://localhost:7070/api/v1/");
+                String apiKey = opts.get("api-key");
+                config = WalletConnectionConfig.external(network, baseUrl,
+                        BlockfrostEndpoints.isHostedUrl(baseUrl)
+                                ? BackendFlavor.BLOCKFROST_HOSTED
+                                : (network.requiresExternalBackend()
+                                        ? BackendFlavor.YACI_STORE : BackendFlavor.YANO),
+                        apiKey);
             } else if (opts.containsKey("managed-port")) {
                 // Pin the managed node's REST port (e.g. to hit the devnet faucet).
                 config = WalletConnectionConfig.managed(network, Integer.parseInt(opts.get("managed-port")));

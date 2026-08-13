@@ -44,6 +44,13 @@ public class ConnectScreen {
     private final ToggleButton managedToggle = new ToggleButton("Run a local node");
     private final ToggleButton externalToggle = new ToggleButton("Connect to my node");
     private final TextField urlField = new TextField();
+    /**
+     * Optional credential for an external backend (ADR-043); empty for a local
+     * node. A PasswordField because it is a credential — the note below says
+     * which network the key is for, so nothing needs it visible to be checked.
+     */
+    private final javafx.scene.control.PasswordField apiKeyField = new javafx.scene.control.PasswordField();
+    private final Label apiKeyNote = new Label();
     private final Button connectButton = new Button("Connect");
     /** Escape hatch from an in-flight attempt — without it a saved connection is a trap. */
     private final Button cancelButton = new Button("Change network");
@@ -130,6 +137,8 @@ public class ConnectScreen {
         urlField.setManaged(false);
         urlField.setVisible(false);
 
+        buildApiKeyField();
+
         Label managedHint = Ui.muted("");
         managedHint.setWrapText(true);
 
@@ -137,9 +146,12 @@ public class ConnectScreen {
             boolean external = sel == externalToggle;
             urlField.setManaged(external);
             urlField.setVisible(external);
+            setManagedVisible(apiKeyField, external);
+            setManagedVisible(apiKeyNote, external);
             managedHint.setVisible(!external);
             managedHint.setManaged(!external);
             updateConnectLabel();
+            updateApiKeyNote();
         });
         managedToggle.setSelected(true);
         updateConnectLabel();
@@ -191,7 +203,7 @@ public class ConnectScreen {
         relayPane.setExpanded(false);
         VBox card = Ui.card("Node connection",
                 Ui.muted("Network"), networkPicker,
-                modeRow, managedHint, urlField,
+                modeRow, managedHint, urlField, apiKeyField, apiKeyNote,
                 connectButton, cancelButton, statusRow, warmup.root(), relayPane);
 
         content.getChildren().setAll(brand, tagline, card);
@@ -253,6 +265,10 @@ public class ConnectScreen {
         } else {
             externalToggle.setSelected(true);
             urlField.setText(saved.baseUrl());
+            // Without this the field is empty on a return visit, and clicking
+            // Connect would rebuild the connection WITHOUT the key that made it
+            // work — a 403 for no reason the user could see.
+            apiKeyField.setText(controller.savedApiKey());
         }
         if (!autoConnect) {
             // A returning user lands here with their last choice prefilled but
@@ -290,17 +306,115 @@ public class ConnectScreen {
         connectButton.setText(managedToggle.isSelected() ? "Start" : "Connect");
     }
 
+    /** The typed credential, or null when the field is empty. */
+    private String apiKey() {
+        String key = apiKeyField.getText();
+        return key == null || key.isBlank() ? null : key.trim();
+    }
+
+    /**
+     * Optional credential for an external backend (ADR-043): a Blockfrost
+     * {@code project_id}, or whatever an auth gateway in front of a node checks.
+     * Empty is the normal case and stays the default — a local node needs none.
+     */
+    private void buildApiKeyField() {
+        apiKeyField.setPromptText("API key / project ID — optional");
+        setManagedVisible(apiKeyField, false);
+        apiKeyNote.setWrapText(true);
+        apiKeyNote.getStyleClass().add("muted");
+        setManagedVisible(apiKeyNote, false);
+        // React as it is typed or pasted, so the endpoint and network fill in
+        // before the user goes looking for them.
+        apiKeyField.textProperty().addListener((obs, old, key) -> onApiKeyChanged(key));
+    }
+
+    /**
+     * A pasted key names its own network and endpoint, so use it rather than
+     * making the user find both (ADR-043 §4). The network is only switched when
+     * the URL field is empty or already points at Blockfrost — someone who typed
+     * their own node's address and then added a gateway credential must not have
+     * it replaced.
+     */
+    private void onApiKeyChanged(String key) {
+        WalletUiController.ApiKeyHint hint = controller.apiKeyHint(key);
+        if (hint == null) {
+            updateApiKeyNote();
+            return;
+        }
+        String url = urlField.getText() == null ? "" : urlField.getText().trim();
+        if (url.isBlank() || url.toLowerCase(java.util.Locale.ROOT).contains("blockfrost.io")) {
+            urlField.setText(hint.baseUrl());
+            if (!hint.networkId().equals(networkPicker.getValue())
+                    && controller.availableNetworks().contains(hint.networkId())) {
+                networkPicker.setValue(hint.networkId());
+            }
+        }
+        updateApiKeyNote();
+    }
+
+    /**
+     * Says what the wallet made of the key, and — the part that matters — warns
+     * when it is for a different chain than the one selected. Blockfrost refuses
+     * such a request itself ("Network token mismatch"), so this only turns a late
+     * and cryptic failure into an early and plain one.
+     */
+    private void updateApiKeyNote() {
+        if (!externalToggle.isSelected()) {
+            return;
+        }
+        WalletUiController.ApiKeyHint hint = controller.apiKeyHint(apiKeyField.getText());
+        String selected = networkPicker.getValue();
+        if (hint == null) {
+            boolean hasKey = apiKeyField.getText() != null && !apiKeyField.getText().isBlank();
+            apiKeyNote.setText(hasKey
+                    ? "The key will be sent to this backend. Leave it empty for a node that needs none."
+                    : "");
+            apiKeyNote.getStyleClass().remove("warning-text");
+            return;
+        }
+        if (!hint.networkId().equals(selected)) {
+            apiKeyNote.setText("This is a " + controller.networkLabel(hint.networkId()) + " "
+                    + hint.provider() + " key, but " + controller.networkLabel(selected)
+                    + " is selected. " + hint.provider() + " will refuse it — pick "
+                    + controller.networkLabel(hint.networkId()) + ", or use a key for "
+                    + controller.networkLabel(selected) + ".");
+            if (!apiKeyNote.getStyleClass().contains("warning-text")) {
+                apiKeyNote.getStyleClass().add("warning-text");
+            }
+            return;
+        }
+        apiKeyNote.getStyleClass().remove("warning-text");
+        // The trade being made, in the words that actually describe it: this is
+        // the only place the wallet ever says it (ADR-043 §7).
+        apiKeyNote.setText(hint.provider() + " serves " + controller.networkLabel(hint.networkId())
+                + ". Your addresses and balance lookups go to " + hint.provider()
+                + " rather than staying on this machine, and what the wallet shows you — including "
+                + "the effect of a transaction you are about to sign — is what they report.");
+    }
+
     private void connect() {
         String network = networkPicker.getValue();
         boolean managed = managedToggle.isSelected();
         String url = urlField.getText() == null ? "" : urlField.getText().trim();
+        // Refuse a key scoped to another chain before spending a round trip on
+        // it (ADR-043 §4). The provider refuses it too, but this says which two
+        // things disagree, where their error only says that they do.
+        WalletUiController.ApiKeyHint hint = managed ? null : controller.apiKeyHint(apiKey());
+        if (hint != null && !hint.networkId().equals(network)) {
+            String message = "That " + hint.provider() + " key is for "
+                    + controller.networkLabel(hint.networkId()) + ", not "
+                    + controller.networkLabel(network) + ".";
+            statusLabel.setText(message);
+            Ui.toast(overlay, message, true);
+            return;
+        }
         NetworkPrefs.remember(network, managed, url);
         beginAttempt(managed, managed
                 ? "Starting your local node for " + network + "…"
                 : "Connecting to " + url + "…");
         runConnect(managed
                 ? controller.connectManaged(network)
-                : controller.connectExternal(network, url));
+                : controller.connectExternal(network, url, apiKey()));
     }
 
     /**

@@ -2,10 +2,19 @@
 
 ## Status
 
-Proposed (plan only — not yet implemented). **BFH-M0 is done**: probed against
-live preprod Blockfrost on 2026-08-13, results in *What the probe found*. Amends
-**ADR-038 §3**, whose refuse-mainnet rule was written for yaci-store and reaches
-hosted Blockfrost by accident; the probe settles that amendment (§5).
+**Implemented (BFH-M0 … BFH-M4, 2026-08-14).** BFH-M5 is partly done: balances,
+protocol params, account state, history routing, network verification and the
+mainnet rule are all exercised against live preprod Blockfrost by
+`HostedBlockfrostLiveTest` (skipped unless a project id is in the environment, so
+no credential lives in this repo). Not yet done: a CIP-30 signature and a Ledger
+signature over a hosted backend.
+
+Amends **ADR-038 §3**, whose refuse-mainnet rule was written for yaci-store and
+reaches hosted Blockfrost by accident; §5 settles that.
+
+Sections marked *corrected while implementing* are places where building the
+thing contradicted the plan. They are left in rather than tidied away, because
+each was a claim reached by reasoning that a five-minute probe overturned.
 
 ## Date
 
@@ -115,6 +124,15 @@ clients that talk to a backend:
   history, rewards, governance, simulation).
 
 Empty means what it means today: no header, for a plain Yano node or a DevKit.
+
+**One header, `project_id`, for every flavor.** Found while building: CCL's
+`BFBackendService` has a single constructor `(url, projectId)` and offers no way
+to add headers, so the money path can send the credential under that name and no
+other. Anything else would have the two halves of one connection authenticating
+differently. An auth gateway in front of a Yano node therefore has to accept the
+credential in a `project_id` header — a real constraint on that use case, and
+cheap for a gateway to satisfy, but it is not the free choice this ADR first
+assumed when it said "whatever an auth gateway expects".
 
 ### 2. Flavor moves off `WalletNetwork`
 
@@ -239,15 +257,36 @@ the next.
 | DRep info | `/governance/dreps/{id}` | `/governance-state/dreps/{id}` | `/governance/dreps/{id}` — **as Yano** |
 | Proposals | `/governance/proposals` | same | same |
 | Account info | `/accounts/{stake}` | same | same, but **no `drep_type`** |
-| Input resolution | per-output route | — | `/txs/{hash}/utxos`, pick index |
-| Script evaluation | `/utils/txs/evaluate` | same | same (Ogmios `jsonwsp`) |
+| Wallet history | `/accounts/{stake}/transactions` | ✗ per-address only | `/accounts/{stake}/transactions` — **as Yano** |
+| Input resolution | `/txs/{hash}/utxos` | same | same |
+| Script evaluation | `/utils/txs/evaluate` | same | same route, **different envelope** |
 | Auth | none | none | `project_id` header |
 
-Two implementation notes fall out. `AccountView.drepType` has no source on a
-hosted backend, so it is null there and the UI must already tolerate that (it
-does for accounts delegating to nobody) — but "delegates to a DRep of unknown
-type" and "delegates to nobody" must not render identically. And the flavor
-probe cannot test for a 404 on `/status`: hosted Blockfrost answers **400**.
+Corrected while implementing — the draft of this table got two rows wrong, both
+by reasoning instead of looking:
+
+- **Input resolution is already flavor-neutral.** `getUtxo` has always used
+  `/txs/{hash}/utxos` for every backend; there is no Yano-only per-output route
+  to map away from.
+- **Wallet history sides with Yano.** Hosted Blockfrost does serve
+  `/accounts/{stake}/transactions` (verified live), so only yaci-store falls back
+  to per-address history — which matters, because per-address misses funds
+  received on another address of the same seed.
+
+And three notes for implementers:
+
+- `AccountView.drepType` has no source on a hosted backend, so it is null there.
+  The UI tolerates null already (accounts delegating to nobody) — but "delegates
+  to a DRep of unknown type" and "delegates to nobody" must not render alike.
+- The flavor probe cannot test for a 404 on `/status`: hosted Blockfrost answers
+  **400**. `getStatus()` skips the call entirely for flavors known not to have it,
+  rather than enumerating refusal codes.
+- **Script evaluation shares the route but not the envelope.** Yano returns an
+  Ogmios `result` object; hosted Blockfrost returns a `jsonwsp/fault` for a
+  rejected request, which matched nothing in the parser. Untreated, the
+  capability probe read UNKNOWN and simulate-before-you-sign would have reported
+  "could not verify" for every script transaction on a hosted backend — the
+  degradation §6 claims does not exist, arriving through the back door.
 
 ### 6c. What this ADR does not do
 
@@ -263,6 +302,24 @@ probe cannot test for a 404 on `/status`: hosted Blockfrost answers **400**.
   ADR, not a paragraph in this one.
 - **No credential sharing between networks.** One key per connection, scoped by
   the server anyway (§5).
+
+### 6d. An empty answer must mean empty
+
+Measured while implementing: with a missing or invalid credential, CCL's
+`DefaultUtxoSupplier.getAll` returns an **empty list** rather than throwing. On a
+hosted backend that renders as *"this wallet has no funds"* — the same hazard
+`PendingNodeAccess` exists to prevent on the warm-up side (E20), arriving here
+through a different door.
+
+Connect-time verification catches a credential that is wrong from the start (the
+magic check runs through the wallet's own client, which does throw). It cannot
+catch one that stops working mid-session — revoked, expired, or past a quota.
+
+So on flavors that authenticate, the UTxO supplier is wrapped: an empty result
+triggers one cheap authenticated call, and if *that* fails the emptiness was a
+lie and the failure is raised instead. One extra request, only on the empty path,
+only on hosted backends. A local node's empty answer is trustworthy and pays
+nothing.
 
 ### 7. Say what a hosted backend sees
 
@@ -295,22 +352,28 @@ common case for a hypothesis.
   credential is network-scoped server-side, and hosted Blockfrost sits on Yano's
   side of the DRep split while lacking `/status`. Still unprobed: `/rewards`
   history shape, and discovery under concurrency (§8).
-- **BFH-M1 — flavor decoupling.** `BackendFlavor` on the connection config,
-  `verifyNetwork` and path selection keyed on it, `WalletNetwork.blockfrostFlavor()`
-  deleted. No new user-visible behaviour; tests pin the mainnet rule for all
-  three flavors.
-- **BFH-M2 — the credential.** Optional key on the external config, threaded to
-  `BFBackendService` and `YanoNodeClient`, persisted, redacted in every log and
-  error path. Verified against a Yano node behind an auth proxy — the case with
-  no Blockfrost in it at all.
-- **BFH-M3 — Connect screen.** Optional field, paste-to-configure, network
-  mismatch refusal, the privacy sentence.
-- **BFH-M4 — capabilities + limits.** Per-flavor `SimulationCapabilities` with
-  degraded states surfaced in the signing prompt; discovery throttling and the
-  rate-limited state.
-- **BFH-M5 — end to end.** Balances, history, send, and a CIP-30 signature over
-  hosted preprod; the same with a Ledger; then the mainnet rule exercised both
-  ways (allowed with a verifying backend, refused without).
+- **BFH-M1 — flavor decoupling. ✅** `BackendFlavor` on the connection config,
+  `verifyNetwork` and path selection keyed on it,
+  `WalletNetwork.blockfrostFlavor()` replaced by `requiresExternalBackend()`
+  (which asks the one question still about the network: whether the wallet can
+  launch a node for it). Tests pin the mainnet rule for all three flavors.
+- **BFH-M2 — the credential. ✅** Optional key on the external config, threaded to
+  `BFBackendService` and `YanoNodeClient`, persisted with owner-only permissions,
+  redacted in `toString`. Every request goes through one builder so no route can
+  forget the header. Still untested: a Yano node behind a real auth proxy — the
+  case with no Blockfrost in it, and the one that motivated the framing.
+- **BFH-M3 — Connect screen. ✅** Optional field (a `PasswordField`),
+  paste-to-configure, mismatch refusal before the request is made, and the
+  privacy sentence.
+- **BFH-M4 — capabilities + limits. ✅** `SimulationCapabilities` turned out to be
+  probed behaviourally rather than assumed from the flavor, which is better than
+  this ADR asked for — it discovers hosted Blockfrost's true capability instead
+  of trusting our table. 403 and 429 are named in failures (§8). Discovery
+  throttling deliberately not built: nothing published a limit to pace against.
+- **BFH-M5 — end to end.** ⏳ Done: network verification both ways, the mainnet
+  rule, protocol params, UTxOs, account state, tip, and the capability probe —
+  all against live preprod Blockfrost. Remaining: a CIP-30 signature and a Ledger
+  signature over a hosted backend.
 
 ## Alternatives considered
 

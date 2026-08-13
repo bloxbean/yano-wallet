@@ -1,5 +1,6 @@
 package com.bloxbean.cardano.yano.wallet.app;
 
+import com.bloxbean.cardano.yano.wallet.core.config.BackendFlavor;
 import com.bloxbean.cardano.yano.wallet.core.config.WalletConnectionConfig;
 import com.bloxbean.cardano.yano.wallet.core.config.WalletNetwork;
 import com.bloxbean.cardano.yano.wallet.core.service.NodeNotReadyException;
@@ -129,11 +130,18 @@ public class WalletBackendManager implements AutoCloseable {
         try {
             Persisted p = MAPPER.readValue(connectionFile.toFile(), Persisted.class);
             WalletNetwork network = WalletNetwork.fromId(p.network());
-            return Optional.of("EXTERNAL".equals(p.mode())
-                    ? WalletConnectionConfig.external(network, p.baseUrl())
-                    : p.managedHttpPort() != null
-                            ? WalletConnectionConfig.managed(network, p.managedHttpPort())
-                            : WalletConnectionConfig.managed(network));
+            if (!"EXTERNAL".equals(p.mode())) {
+                return Optional.of(p.managedHttpPort() != null
+                        ? WalletConnectionConfig.managed(network, p.managedHttpPort())
+                        : WalletConnectionConfig.managed(network));
+            }
+            // An older file has no flavor; fall back to what the network implied
+            // before ADR-043 split the two, so an existing DevKit connection
+            // keeps working rather than being read as a Yano node.
+            BackendFlavor flavor = p.flavor() != null
+                    ? BackendFlavor.valueOf(p.flavor())
+                    : (network.requiresExternalBackend() ? BackendFlavor.YACI_STORE : BackendFlavor.YANO);
+            return Optional.of(WalletConnectionConfig.external(network, p.baseUrl(), flavor, p.apiKey()));
         } catch (IOException e) {
             log.warn("Unable to read connection config {}: {}", connectionFile, e.getMessage());
             return Optional.empty();
@@ -156,7 +164,8 @@ public class WalletBackendManager implements AutoCloseable {
             }
         }
 
-        YanoNodeBackend backend = YanoNodeBackend.connectVerified(network, baseUrl);
+        YanoNodeBackend backend = YanoNodeBackend.connectVerified(network, baseUrl,
+                config.flavor(), config.apiKey());
         Path networkDir = dataDirRoot.resolve(network.id());
         FileStoredWalletRepository repository = new FileStoredWalletRepository(networkDir, network);
         WalletService service = new WalletService(
@@ -384,7 +393,9 @@ public class WalletBackendManager implements AutoCloseable {
             Files.createDirectories(dataDirRoot);
             MAPPER.writerWithDefaultPrettyPrinter().writeValue(connectionFile.toFile(),
                     new Persisted(config.mode().name(), config.network().id(),
-                            config.externalBaseUrl(), config.managedHttpPort()));
+                            config.externalBaseUrl(), config.managedHttpPort(),
+                            config.flavor().name(), config.apiKey()));
+            restrictToOwner(connectionFile);
         } catch (IOException e) {
             throw new UncheckedIOException("Unable to persist connection config", e);
         }
@@ -477,6 +488,28 @@ public class WalletBackendManager implements AutoCloseable {
         }
     }
 
-    private record Persisted(String mode, String network, String baseUrl, Integer managedHttpPort) {
+    /**
+     * @param apiKey a backend credential in plaintext (ADR-043 §3). It cannot go
+     *               in the vault: connecting happens before any wallet unlocks,
+     *               so the vault is locked exactly when this is needed. The file
+     *               is restricted to its owner instead.
+     */
+    private record Persisted(String mode, String network, String baseUrl, Integer managedHttpPort,
+                             String flavor, String apiKey) {
+    }
+
+    /**
+     * Best-effort owner-only permissions for a file that may hold a credential.
+     * Silent on filesystems without POSIX permissions (Windows) — the alternative
+     * is failing to save a connection over a hardening measure.
+     */
+    private static void restrictToOwner(Path file) {
+        try {
+            Files.setPosixFilePermissions(file, java.util.Set.of(
+                    java.nio.file.attribute.PosixFilePermission.OWNER_READ,
+                    java.nio.file.attribute.PosixFilePermission.OWNER_WRITE));
+        } catch (IOException | UnsupportedOperationException e) {
+            log.debug("Could not restrict permissions on {}: {}", file, e.toString());
+        }
     }
 }

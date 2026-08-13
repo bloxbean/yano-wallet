@@ -1,5 +1,6 @@
 package com.bloxbean.cardano.yano.wallet.nodeclient;
 
+import com.bloxbean.cardano.yano.wallet.core.config.BackendFlavor;
 import com.bloxbean.cardano.yano.wallet.core.config.WalletNetwork;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
@@ -128,13 +129,37 @@ class YanoNodeClientTest {
     }
 
     @Test
-    void blockfrostFlavoredNetworkSkipsGenesisVerification() {
+    void yaciStoreSkipsGenesisVerificationBecauseItHasNone() {
         // No /genesis stubbed: yaci-store doesn't serve one, and the network comes
         // from the user's explicit YACI_DEVKIT choice instead.
-        YanoNodeClient client = new YanoNodeClient(stub.baseUrl());
+        YanoNodeClient client = new YanoNodeClient(stub.baseUrl(), BackendFlavor.YACI_STORE);
 
         assertThatCode(() -> client.verifyNetwork(WalletNetwork.YACI_DEVKIT))
                 .doesNotThrowAnyException();
+    }
+
+    @Test
+    void theSkipFollowsTheBACKENDNotTheNetwork() {
+        // The distinction ADR-043 §2 exists for. A Yano node serving the DevKit
+        // network is still asked to prove itself — under the old network-keyed
+        // rule it was silently trusted. No /genesis is stubbed, so a client that
+        // asks for one fails, which is exactly the assertion.
+        YanoNodeClient yanoOnDevkitNetwork = new YanoNodeClient(stub.baseUrl(), BackendFlavor.YANO);
+
+        assertThatThrownBy(() -> yanoOnDevkitNetwork.verifyNetwork(WalletNetwork.YACI_DEVKIT))
+                .isInstanceOf(NodeClientException.class);
+    }
+
+    @Test
+    void yaciStoreIsRefusedMainnetOutright() {
+        // ADR-038 §3, kept intact by ADR-043: a backend that cannot say which
+        // chain it serves must never serve mainnet, whatever the user picked.
+        YanoNodeClient client = new YanoNodeClient(stub.baseUrl(), BackendFlavor.YACI_STORE);
+
+        assertThatThrownBy(() -> client.verifyNetwork(WalletNetwork.MAINNET))
+                .isInstanceOf(NodeClientException.class)
+                .hasMessageContaining("must not be")
+                .hasMessageContaining("mainnet");
     }
 
     @Test

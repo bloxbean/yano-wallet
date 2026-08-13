@@ -43,29 +43,34 @@ class WalletNetworkTest {
         assertThat(devkit.toCclNetwork().getProtocolMagic()).isEqualTo(42);
         assertThat(devkit.toCclNetwork().getNetworkId()).isEqualTo(0);
         assertThat(devkit.production()).isFalse();
-        assertThat(devkit.blockfrostFlavor()).isTrue();            // served by yaci-store
+        assertThat(devkit.requiresExternalBackend()).isTrue();     // the wallet cannot launch yaci-store
         assertThat(devkit.defaultBaseUrl()).isEqualTo("http://localhost:8080/api/v1");
     }
 
     @Test
-    void onlyYaciDevkitIsBlockfrostFlavored() {
-        // Yano-backed networks must keep strict genesis verification (ADR-038).
-        assertThat(WalletNetwork.DEVNET.blockfrostFlavor()).isFalse();
-        assertThat(WalletNetwork.PREPROD.blockfrostFlavor()).isFalse();
-        assertThat(WalletNetwork.PREVIEW.blockfrostFlavor()).isFalse();
-        assertThat(WalletNetwork.MAINNET.blockfrostFlavor()).isFalse();
+    void onlyYaciDevkitNeedsAnExternalBackend() {
+        // Every other network can be served by a node the wallet launches.
+        assertThat(WalletNetwork.DEVNET.requiresExternalBackend()).isFalse();
+        assertThat(WalletNetwork.PREPROD.requiresExternalBackend()).isFalse();
+        assertThat(WalletNetwork.PREVIEW.requiresExternalBackend()).isFalse();
+        assertThat(WalletNetwork.MAINNET.requiresExternalBackend()).isFalse();
         assertThat(WalletNetwork.DEVNET.defaultBaseUrl()).isNull();
     }
 
     @Test
-    void noProductionNetworkMayBeBlockfrostFlavored() {
-        // The ADR-038 safety rule, pinned as an invariant rather than a code path:
-        // a backend that cannot prove its network must never serve mainnet.
-        for (WalletNetwork network : WalletNetwork.values()) {
-            assertThat(network.production() && network.blockfrostFlavor())
-                    .as("%s must not be both production and unverifiable", network)
-                    .isFalse();
-        }
+    void theMainnetRuleIsAboutTheBACKENDNotTheNetwork() {
+        // The ADR-038 §3 safety rule, as amended by ADR-043 §5, pinned as an
+        // invariant rather than a code path: a backend that cannot prove which
+        // chain it serves must never serve mainnet.
+        //
+        // It moved off WalletNetwork deliberately. Asking a network "are you
+        // Blockfrost-flavored?" stopped having an answer once preprod could be
+        // reached through a Yano node OR through hosted Blockfrost, and the old
+        // shape would have answered "no" for a hosted mainnet connection — the
+        // one case where being wrong costs real ADA.
+        assertThat(BackendFlavor.YACI_STORE.provesItsNetwork()).isFalse();
+        assertThat(BackendFlavor.YANO.provesItsNetwork()).isTrue();
+        assertThat(BackendFlavor.BLOCKFROST_HOSTED.provesItsNetwork()).isTrue();
     }
 
     @Test
