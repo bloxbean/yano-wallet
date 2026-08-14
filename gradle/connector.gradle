@@ -1,0 +1,45 @@
+// Packages wallet-connector/ as a downloadable zip: unzip it, then
+// chrome://extensions -> Developer mode -> Load unpacked. It is also the shape
+// the Chrome Web Store accepts at submission time, so one artifact serves both.
+//
+// wallet-connector/ is plain files, not a Gradle module (see settings.gradle) —
+// there is nothing to compile, so this is a straight Zip of the source tree
+// minus what only matters inside the repo.
+//
+// NO SIGNING KEY IS INVOLVED. manifest.json carries the *public* "key", which is
+// what pins the extension id (bjnkcmbkjaebecgllkgbeapbjcknnedn) that the native
+// messaging host allowlists — a plain zip loaded unpacked already gets that id.
+// The private extension-key.pem only signs a .crx, and Chrome refuses off-store
+// .crx installs anyway, so CI never needs the key and must not hold it.
+
+import groovy.json.JsonSlurper
+
+def connectorDir = file("$rootDir/wallet-connector")
+
+// The extension owns its own version. It ships on Chrome Web Store review
+// cycles rather than the wallet's release cadence, and walletVersion could not
+// drive it even if we wanted that: "0.0.1-dev3" is not a legal Chrome version
+// (1-4 dot-separated integers), and the "0.0.1" underneath it would be a
+// *downgrade* of the manifest's current 0.1.0. So this reads the manifest and
+// never writes to it.
+def connectorVersion = providers.provider {
+    new JsonSlurper().parse(new File(connectorDir, 'manifest.json')).version
+}
+
+// ./gradlew connectorZip
+tasks.register('connectorZip', Zip) {
+    group = 'distribution'
+    description = 'Browser extension (CIP-30 connector) zip — unzip, then chrome://extensions > Load unpacked'
+
+    // manifest.json MUST sit at the zip root. The Web Store rejects a nested
+    // manifest, and unzipping already creates a folder named after the archive,
+    // so a wrapping directory would only break the upload for nothing.
+    from(connectorDir) {
+        exclude 'dev/**'        // demo dApp + its node_modules — not part of the extension
+        exclude 'README.md'     // repo-facing; the store listing carries the user-facing text
+        exclude '**/.DS_Store'
+    }
+
+    archiveFileName = connectorVersion.map { "yano-connector-${it}.zip" }
+    destinationDirectory = layout.buildDirectory.dir('dist')
+}
