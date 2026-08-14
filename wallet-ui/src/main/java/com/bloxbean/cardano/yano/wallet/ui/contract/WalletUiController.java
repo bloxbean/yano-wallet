@@ -31,10 +31,27 @@ public interface WalletUiController {
     boolean isConnected();
 
     /**
-     * Launches (or reuses) a managed local node for the network and connects
-     * to it. Completes when the node's REST API is reachable.
+     * Launches (or reuses) a managed local node for the network.
+     *
+     * <p>Completes as soon as the node PROCESS is up — not when its API is. On a
+     * first start those are far apart: the node rebuilds its account-history
+     * index before binding an HTTP port, which measured about 86 minutes on
+     * preview. Everything a user needs to do first — create or restore a wallet —
+     * is local and works immediately, so the UI moves on and waits for the chain
+     * only where it genuinely needs it.
+     *
+     * <p>Use {@link #awaitNodeReady()} for the second half.
      */
     CompletableFuture<ConnectionInfo> connectManaged(String networkId);
+
+    /** True when the node's API is up, i.e. chain-backed screens will work. */
+    boolean nodeReady();
+
+    /**
+     * Completes when the in-flight connection's node answers, or exceptionally if
+     * it never does. Fails immediately when no attempt is in progress.
+     */
+    CompletableFuture<Void> awaitNodeReady();
 
     /** Verifies and connects to an external node URL for the network. */
     CompletableFuture<ConnectionInfo> connectExternal(String networkId, String baseUrl);
@@ -386,8 +403,30 @@ public interface WalletUiController {
      * detail in {@code detail}); {@code blockNumber} is 0 until the node reports a
      * tip. {@code failed} + {@code failureReason} carry a startup failure.
      */
-    record NodeStartupView(String phase, String detail, long blockNumber,
+    /**
+     * A starting node's progress.
+     *
+     * @param fraction        position in [0, 1], or -1 when this phase reports none
+     *                        (show an indeterminate bar)
+     * @param remainingSeconds estimate of time left, or 0 when it is too early to
+     *                        make one worth showing
+     */
+    record NodeStartupView(String phase, String detail, long blockNumber, long totalBlocks,
+                           double fraction, long remainingSeconds,
                            boolean reachable, boolean failed, String failureReason) {
+
+        public static NodeStartupView indeterminate(String phase, String detail) {
+            return new NodeStartupView(phase, detail, 0, 0, -1, 0, false, false, null);
+        }
+
+        public NodeStartupView asReachable() {
+            return new NodeStartupView(phase, detail, blockNumber, totalBlocks, fraction,
+                    remainingSeconds, true, failed, failureReason);
+        }
+
+        public boolean determinate() {
+            return fraction >= 0;
+        }
     }
 
     /**

@@ -60,38 +60,71 @@ public final class ManagedNode implements AutoCloseable {
     }
 
     /**
-     * Starts the node process and blocks until its REST API answers or the
-     * timeout elapses. Devnet chainstate is wiped first (the chain is
-     * regenerated each launch); real-network chainstate persists.
+     * Starts the node process and blocks until its REST API answers or the node
+     * goes quiet for {@code noProgressTimeout}. Devnet chainstate is wiped first
+     * (the chain is regenerated each launch); real-network chainstate persists.
      *
-     * @return true if the node became reachable within the timeout
+     * <p>The timeout is a <em>silence</em> window, not a ceiling on the start.
+     * It used to be a ceiling, and that was wrong: rebuilding the account-history
+     * index over a synced preview chain takes about 86 minutes (measured, ~880
+     * blocks/s over 4.57M blocks) with no HTTP port bound the whole time, so a
+     * 45-minute cap killed a node that was working correctly, roughly halfway
+     * through, and threw away its progress. Any growth of the node's log counts
+     * as progress and restarts the window — phase-agnostic on purpose, so a
+     * startup stage nothing here knows about still keeps the node alive.
+     *
+     * @return true if the node became reachable
      */
-    public boolean startAndAwaitReady(Duration timeout) {
-        // Only the spawn is guarded; the poll loop below runs WITHOUT the
-        // monitor so close() (e.g. from a shutdown hook) can destroy a
-        // still-starting node instead of blocking for the whole timeout.
-        synchronized (this) {
-            if (closing.get()) {
-                return false;
-            }
-            if (state.get() == State.RUNNING && isReachable()) {
-                return true;
-            }
-            state.set(State.STARTING);
-            failureReason = null;
-            try {
-                prepareChainstate();
-                process = spawn();
-            } catch (IOException e) {
-                failAndLog("Unable to start node process: " + e.getMessage(), e);
-                return false;
-            }
-        }
+    public boolean startAndAwaitReady(Duration noProgressTimeout) {
+        return start() && awaitReady(noProgressTimeout);
+    }
 
+    /**
+     * Spawns the node process and returns as soon as it is running — without
+     * waiting for its REST API.
+     *
+     * <p>Split out from {@link #startAndAwaitReady} so the wallet can open its
+     * local screens while the node warms up. The caller then drives
+     * {@link #awaitReady} on a thread of its own choosing, which matters: the
+     * wait can last over an hour, and it must not be holding a lock or an
+     * executor anyone else needs.
+     *
+     * <p>Synchronized (unlike the wait) because two concurrent spawns would
+     * leave one process unsupervised on the same chainstate.
+     *
+     * @return false if the process could not be started, or a close is in flight
+     */
+    public synchronized boolean start() {
+        if (closing.get()) {
+            return false;
+        }
+        if (state.get() == State.RUNNING && isReachable()) {
+            return true;
+        }
+        state.set(State.STARTING);
+        failureReason = null;
+        try {
+            prepareChainstate();
+            process = spawn();
+            return true;
+        } catch (IOException e) {
+            failAndLog("Unable to start node process: " + e.getMessage(), e);
+            return false;
+        }
+    }
+
+    /**
+     * Blocks until the node's REST API answers, it dies, or it goes silent for
+     * {@code noProgressTimeout}. Runs WITHOUT this object's monitor so
+     * {@link #close()} (e.g. from a shutdown hook) can destroy a still-starting
+     * node instead of blocking behind the wait.
+     */
+    public boolean awaitReady(Duration noProgressTimeout) {
         Process current = process;
-        long deadline = System.nanoTime() + timeout.toNanos();
+        long lastProgressNanos = System.nanoTime();
+        long lastLogSize = logSize();
         int polls = 0;
-        while (System.nanoTime() < deadline) {
+        while (true) {
             if (closing.get()) {
                 return false;
             }
@@ -101,13 +134,17 @@ public final class ManagedNode implements AutoCloseable {
                 return false;
             }
             if (isReachable()) {
-                state.set(State.RUNNING);
-                log.info("Managed node ready at {}", spec.baseUrl());
+                // Only announce the transition: a connect that finds the node
+                // already up calls this again, and two "ready" lines for one
+                // start reads like the node restarted.
+                if (state.getAndSet(State.RUNNING) != State.RUNNING) {
+                    log.info("Managed node ready at {}", spec.baseUrl());
+                }
                 return true;
             }
-            // A node that hit a fatal error can stay alive serving failures for
-            // the whole (long) timeout — scan its log so the user sees the real
-            // cause in seconds, not after a 45-minute wait.
+            // A node that hit a fatal error can stay alive serving failures
+            // indefinitely — scan its log so the user sees the real cause in
+            // seconds rather than waiting out the silence window.
             if (++polls % 10 == 0) {
                 String fatal = fatalLogError(spec.logFile());
                 if (fatal != null) {
@@ -117,11 +154,43 @@ public final class ManagedNode implements AutoCloseable {
                     return false;
                 }
             }
+            long size = logSize();
+            // Any CHANGE counts, not just growth: ProcessBuilder truncates this
+            // file on every start (BACKLOG E17d), so a second node on the same
+            // data dir resets it to zero. Testing for growth would then wait for
+            // the log to climb back past its old length — after ten hours of
+            // syncing that is hundreds of MB, and the node would be declared
+            // hung and killed while working perfectly.
+            if (size != lastLogSize) {
+                lastLogSize = size;
+                lastProgressNanos = System.nanoTime();
+            } else if (System.nanoTime() - lastProgressNanos > noProgressTimeout.toNanos()) {
+                failAndLog("Node wrote nothing to its log for " + noProgressTimeout.toSeconds()
+                        + "s and never became ready. Last lines of "
+                        + spec.logFile() + ":\n" + logTail(spec.logFile(), 12), null);
+                return false;
+            }
             sleep(500);
         }
-        failAndLog("Node did not become ready within " + timeout.toSeconds() + "s. Last lines of "
-                + spec.logFile() + ":\n" + logTail(spec.logFile(), 12), null);
-        return false;
+    }
+
+    /** Size of the node's log, or -1 when it cannot be read (treated as no progress). */
+    private long logSize() {
+        try {
+            Path logFile = spec.logFile();
+            return logFile != null && Files.exists(logFile) ? Files.size(logFile) : -1;
+        } catch (IOException e) {
+            return -1;
+        }
+    }
+
+    /**
+     * What the starting node is currently doing, read from its log — the only
+     * source available before it binds its HTTP port. Cheap enough to poll from
+     * the UI (see {@link #tailLines}); never throws.
+     */
+    public NodeStartupProgress progress() {
+        return NodeStartupProgress.parse(tailLines(spec.logFile(), 40));
     }
 
     /**

@@ -3,19 +3,14 @@ package com.bloxbean.cardano.yano.wallet.ui.screens;
 import com.bloxbean.cardano.yano.wallet.ui.contract.WalletUiController;
 import com.bloxbean.cardano.yano.wallet.ui.util.NetworkPrefs;
 import com.bloxbean.cardano.yano.wallet.ui.util.Ui;
-import javafx.animation.KeyFrame;
-import javafx.animation.Timeline;
 import javafx.collections.FXCollections;
 import javafx.geometry.Insets;
 import javafx.geometry.Pos;
 import javafx.scene.Node;
 import javafx.scene.control.Button;
 import javafx.scene.control.ComboBox;
-import javafx.scene.control.Hyperlink;
 import javafx.scene.control.Label;
-import javafx.scene.control.ProgressBar;
 import javafx.scene.control.ProgressIndicator;
-import javafx.scene.control.TextArea;
 import javafx.scene.control.TextField;
 import javafx.scene.control.TitledPane;
 import javafx.scene.control.ToggleButton;
@@ -23,7 +18,6 @@ import javafx.scene.control.ToggleGroup;
 import javafx.scene.layout.HBox;
 import javafx.scene.layout.StackPane;
 import javafx.scene.layout.VBox;
-import javafx.util.Duration;
 
 import java.util.function.Consumer;
 
@@ -32,14 +26,13 @@ import java.util.function.Consumer;
  * managed local node the wallet launches (recommended, zero-config), or an
  * external Yano node URL (your own, or a LAN/remote node).
  *
- * <p>While a managed connection is being established the screen polls the
- * node's startup state and shows live progress plus an optional log peek, so a
- * slow first sync (which can take minutes) is legible instead of a blank spinner.
+ * <p>While a managed connection is being established the screen shows the node's
+ * live startup progress plus an optional log peek ({@link NodeWarmupView}). It
+ * hands over to the next screen as soon as the node PROCESS is up, rather than
+ * when its API is: the two can be more than an hour apart on a first start, and
+ * everything the user does next — create or restore a wallet — is local.
  */
 public class ConnectScreen {
-    /** After this long with no progress, point the user at the node log. */
-    private static final long SLOW_HINT_MS = 30_000;
-
     private final WalletUiController controller;
     private final StackPane overlay;
     private final Consumer<WalletUiController.ConnectionInfo> onConnected;
@@ -60,15 +53,7 @@ public class ConnectScreen {
     private final ProgressIndicator spinner = new ProgressIndicator();
 
     // Managed-node startup progress (hidden until a managed connect is running).
-    private final VBox startupBox = new VBox(10);
-    private final Label startupDetail = new Label();
-    private final ProgressBar startupBar = new ProgressBar();
-    private final Hyperlink logToggle = new Hyperlink("Show node log");
-    private final TextArea logArea = new TextArea();
-    private final Label slowHint = new Label();
-    private Timeline startupPoller;
-    private long startupStartedMs;
-    private boolean logVisible;
+    private final NodeWarmupView warmup;
     private boolean managedAttempt;
     /** Set while a cancel is in flight so the aborted future's failure stays silent. */
     private boolean cancelled;
@@ -90,6 +75,7 @@ public class ConnectScreen {
         this.overlay = overlay;
         this.autoConnect = autoConnect;
         this.onConnected = onConnected;
+        this.warmup = new NodeWarmupView(controller);
         content.setAlignment(Pos.CENTER);
         content.setMaxWidth(560);
         content.setPadding(new Insets(32));
@@ -153,8 +139,10 @@ public class ConnectScreen {
             urlField.setVisible(external);
             managedHint.setVisible(!external);
             managedHint.setManaged(!external);
+            updateConnectLabel();
         });
         managedToggle.setSelected(true);
+        updateConnectLabel();
 
         // Some networks are served by a backend the wallet can't launch (a Yaci
         // DevKit devnet runs on yaci-store) — force external and offer its URL.
@@ -200,13 +188,11 @@ public class ConnectScreen {
         HBox statusRow = new HBox(10, spinner, statusLabel);
         statusRow.setAlignment(Pos.CENTER_LEFT);
 
-        buildStartupBox();
-
         relayPane.setExpanded(false);
         VBox card = Ui.card("Node connection",
                 Ui.muted("Network"), networkPicker,
                 modeRow, managedHint, urlField,
-                connectButton, cancelButton, statusRow, startupBox, relayPane);
+                connectButton, cancelButton, statusRow, warmup.root(), relayPane);
 
         content.getChildren().setAll(brand, tagline, card);
         prefillAndMaybeAutoConnect();
@@ -254,31 +240,6 @@ public class ConnectScreen {
                         + "network yet — the first sync can take a long time on a public network.");
     }
 
-    private void buildStartupBox() {
-        startupDetail.setWrapText(true);
-        startupDetail.getStyleClass().add("muted");
-
-        startupBar.setMaxWidth(Double.MAX_VALUE);
-        startupBar.getStyleClass().add("sync-progress");
-        startupBar.setProgress(ProgressBar.INDETERMINATE_PROGRESS);
-
-        logToggle.setOnAction(e -> toggleLog());
-        logToggle.getStyleClass().add("muted");
-
-        logArea.setEditable(false);
-        logArea.setWrapText(false);
-        logArea.setPrefRowCount(12);
-        logArea.getStyleClass().add("node-log");
-        setManagedVisible(logArea, false);
-
-        slowHint.setWrapText(true);
-        slowHint.getStyleClass().add("muted");
-        setManagedVisible(slowHint, false);
-
-        startupBox.getChildren().setAll(startupBar, startupDetail, logToggle, logArea, slowHint);
-        setManagedVisible(startupBox, false);
-    }
-
     private void prefillAndMaybeAutoConnect() {
         WalletUiController.ConnectionInfo saved = controller.savedConnection();
         if (saved == null) {
@@ -298,7 +259,7 @@ public class ConnectScreen {
             // NOT connected. Say which network is about to be used and what the
             // button will do — starting a local node can sync for a long time,
             // so it should never be a surprise consequence of opening the app.
-            connectButton.setText(saved.managed() ? "Start node" : "Connect");
+            updateConnectLabel();
             statusLabel.setText(saved.managed()
                     ? "Ready to start the local " + controller.networkLabel(saved.networkId()) + " node."
                     + "  Choose a different network above to change it."
@@ -314,6 +275,19 @@ public class ConnectScreen {
         beginAttempt(saved.managed(), "Reconnecting to " + controller.networkLabel(saved.networkId())
                 + (saved.managed() ? " · local node…" : " · " + saved.baseUrl()));
         runConnect(controller.reconnectSaved());
+    }
+
+    /**
+     * The primary button does two different things, so it says which: a managed
+     * connection LAUNCHES a node here, while an external one dials a node
+     * someone else is already running (your own, or a Yaci DevKit devnet).
+     *
+     * <p>Kept to one word each. "Start node" named the object as well as the
+     * verb, which then read oddly beside the mode buttons that just named it —
+     * and there is nothing else on this screen the button could be starting.
+     */
+    private void updateConnectLabel() {
+        connectButton.setText(managedToggle.isSelected() ? "Start" : "Connect");
     }
 
     private void connect() {
@@ -336,9 +310,8 @@ public class ConnectScreen {
     private void cancel() {
         cancelled = true;
         controller.cancelConnect();
-        stopStartupPoller();
+        warmup.stop();
         setIdle();
-        setManagedVisible(startupBox, false);
         statusLabel.setText("Stopped. Choose a network and how to reach it.");
     }
 
@@ -351,18 +324,26 @@ public class ConnectScreen {
         statusLabel.setText(message);
         if (managed) {
             spinner.setVisible(false);
-            beginManagedStartup();
+            warmup.start();
         } else {
             spinner.setVisible(true);
-            setManagedVisible(startupBox, false);
+            warmup.stop();
         }
     }
 
+    /**
+     * For a managed connection this future completes once the node PROCESS is
+     * up, not once its API is — so this hands over to the next screen while the
+     * node is still starting, and the wait continues there (see
+     * {@link NodeWarmupView}). Local work is available throughout; only the
+     * chain-backed parts wait.
+     */
     private void runConnect(java.util.concurrent.CompletableFuture<WalletUiController.ConnectionInfo> future) {
         Ui.onFx(future, info -> {
-            stopStartupPoller();
+            // Stop polling but leave the view as it is: the screen is about to be
+            // replaced, and blanking the progress first only flashes.
+            warmup.stopPolling();
             setIdle();
-            setManagedVisible(startupBox, false);
             onConnected.accept(info);
         }, error -> {
             if (cancelled) {
@@ -371,88 +352,16 @@ public class ConnectScreen {
                 cancelled = false;
                 return;
             }
-            stopStartupPoller();
             setIdle();
             String message = "Connection failed: " + error.getMessage();
             statusLabel.setText(message);
             if (managedAttempt) {
                 // Show the real cause + the node log inline so a start failure is
                 // diagnosable without leaving the screen.
-                startupBar.setProgress(0);
-                startupDetail.setText(message);
-                if (!startupDetail.getStyleClass().contains("warning-text")) {
-                    startupDetail.getStyleClass().add("warning-text");
-                }
-                setManagedVisible(startupBox, true);
-                setManagedVisible(slowHint, false);
-                showLog();
-                refreshLog();
+                warmup.showFailure(message);
             }
             Ui.toast(overlay, message, true);
         });
-    }
-
-    private void beginManagedStartup() {
-        startupStartedMs = System.currentTimeMillis();
-        startupBar.setProgress(ProgressBar.INDETERMINATE_PROGRESS);
-        startupDetail.getStyleClass().remove("warning-text");
-        startupDetail.setText("Starting the local node…");
-        setManagedVisible(slowHint, false);
-        setManagedVisible(startupBox, true);
-        if (startupPoller == null) {
-            startupPoller = new Timeline(new KeyFrame(Duration.seconds(1.2), e -> pollStartup()));
-            startupPoller.setCycleCount(Timeline.INDEFINITE);
-        }
-        startupPoller.playFromStart();
-        pollStartup();
-    }
-
-    private void pollStartup() {
-        Ui.onFx(controller.nodeStartupStatus(), status -> {
-            if (!status.failed()) {
-                startupDetail.setText(status.detail());
-                startupDetail.getStyleClass().remove("warning-text");
-            }
-            long elapsed = System.currentTimeMillis() - startupStartedMs;
-            if (!status.reachable() && !status.failed() && elapsed > SLOW_HINT_MS) {
-                slowHint.setText("Still working — this is normal for a first sync on a public network. "
-                        + "Open the node log above to watch block-by-block progress.");
-                setManagedVisible(slowHint, true);
-            }
-        }, error -> { /* transient; keep the last message */ });
-        if (logVisible) {
-            refreshLog();
-        }
-    }
-
-    private void toggleLog() {
-        if (logVisible) {
-            logVisible = false;
-            logToggle.setText("Show node log");
-            setManagedVisible(logArea, false);
-        } else {
-            showLog();
-            refreshLog();
-        }
-    }
-
-    private void showLog() {
-        logVisible = true;
-        logToggle.setText("Hide node log");
-        setManagedVisible(logArea, true);
-    }
-
-    private void refreshLog() {
-        Ui.onFx(controller.nodeLogTail(200), lines -> {
-            logArea.setText(lines.isEmpty() ? "(no log yet)" : String.join("\n", lines));
-            logArea.setScrollTop(Double.MAX_VALUE);
-        }, error -> { /* ignore — best effort */ });
-    }
-
-    private void stopStartupPoller() {
-        if (startupPoller != null) {
-            startupPoller.stop();
-        }
     }
 
     private void setIdle() {

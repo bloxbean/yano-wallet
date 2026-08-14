@@ -57,6 +57,29 @@ public class WalletService {
         this.nodeStatusPort = Objects.requireNonNull(nodeStatusPort, "nodeStatusPort is required");
     }
 
+    /**
+     * A service that can do everything local — list, create, restore, unlock —
+     * and fails loudly on anything needing the chain.
+     *
+     * <p>For the window where a managed node has been launched but its REST API
+     * is not up yet, which on a first start can exceed an hour (rebuilding the
+     * account-history index binds no HTTP port while it runs). Wallet creation
+     * and restore are repository operations and have no reason to wait for that;
+     * balances and transactions genuinely do, and say so via
+     * {@link NodeNotReadyException}.
+     *
+     * <p>Callers must replace this with a fully-connected service once the node
+     * answers, rather than let it be the service a wallet is unlocked against —
+     * a {@link Session} belongs to the service that created it, so a session
+     * opened here would keep the dead suppliers for its whole life.
+     */
+    public static WalletService localOnly(StoredWalletRepository repository,
+                                          PendingTransactionStore pendingStore,
+                                          String notReadyMessage) {
+        PendingNodeAccess pending = new PendingNodeAccess(notReadyMessage);
+        return new WalletService(repository, pending, pending, pending, pendingStore, pending);
+    }
+
     public StoredWalletRepository repository() {
         return repository;
     }
