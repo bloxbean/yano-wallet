@@ -3,11 +3,16 @@ name: build
 # Everyday CI: compile every module and run the test suite on each push to main
 # and every pull request.
 #
-# Deliberately does NOT package. Building an installer means jpackage on four
-# runners plus fetching the pinned ~256 MB Yano node distribution, which is
-# release work (release.yml, on tag v*). Only the packaging tasks depend on
-# :fetchYanoNode, so an ordinary `build` never downloads the node — this stays a
-# fast signal on whether the code compiles and the tests pass.
+# Deliberately does NOT package the desktop app. Building an installer means
+# jpackage on four runners plus fetching the pinned ~256 MB Yano node
+# distribution, which is release work (release.yml, on tag v*). Only the
+# packaging tasks depend on :fetchYanoNode, so an ordinary `build` never
+# downloads the node — this stays a fast signal on whether the code compiles and
+# the tests pass.
+#
+# The browser extension is the one exception: it is plain files with nothing to
+# compile and nothing to download, so zipping it costs ~nothing and gives every
+# PR a connector build a tester can load without cloning the repo.
 #
 # One runner is enough: nothing here touches the OS-specific JavaFX or
 # hardware-wallet natives at test time, and release.yml covers all four
@@ -46,6 +51,23 @@ jobs:
 
       - name: Build and test
         run: ./gradlew build --no-daemon
+
+      # Unzip the artifact, then chrome://extensions > Developer mode > Load
+      # unpacked. The manifest's public "key" travels with it, so the extension
+      # keeps the id the wallet's native messaging host allowlists — no signing
+      # key is used or needed here (see gradle/connector.gradle).
+      - name: Package browser connector
+        run: ./gradlew connectorZip --no-daemon
+
+      - name: Upload browser connector
+        uses: actions/upload-artifact@v4
+        with:
+          # Artifact name carries the commit; the file inside keeps the
+          # extension's own version, which is the one Chrome reads.
+          name: yano-connector-${{ github.sha }}
+          path: build/dist/yano-connector-*.zip
+          if-no-files-found: error
+          retention-days: 14
 
       # Reports are what make a red build diagnosable without re-running it
       # locally, so keep them even when (especially when) the build failed.
