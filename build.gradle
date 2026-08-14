@@ -32,3 +32,6 @@ subprojects {
 
 // Resolves the Yano node distribution the wallet launches and bundles.
 apply from: "$rootDir/gradle/yano-node.gradle"
+
+// Packages the browser extension (wallet-connector/) as a loadable zip.
+apply from: "$rootDir/gradle/connector.gradle"
