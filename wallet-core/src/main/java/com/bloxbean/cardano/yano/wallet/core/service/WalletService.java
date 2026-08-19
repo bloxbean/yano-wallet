@@ -22,7 +22,10 @@ import com.bloxbean.cardano.yano.wallet.core.wallet.WalletBalance;
 import com.bloxbean.cardano.yano.wallet.core.wallet.WalletBalanceService;
 
 import java.math.BigInteger;
+import java.util.ArrayList;
+import java.util.LinkedHashMap;
 import java.util.List;
+import java.util.Map;
 import java.util.Objects;
 import java.util.Optional;
 
@@ -181,8 +184,7 @@ public class WalletService {
         return pendingStore.find(txHash)
                 .filter(pending -> pending.isStale(nowEpochMillis, PENDING_TIMEOUT_MILLIS))
                 .map(pending -> {
-                    pendingStore.save(pending.markFailed(
-                            "Not seen on chain within " + (PENDING_TIMEOUT_MILLIS / 60000) + " minutes"));
+                    pendingStore.save(pending.markFailed(timeoutMessage()));
                     return true;
                 })
                 .orElse(false);
@@ -200,6 +202,153 @@ public class WalletService {
     }
 
     /**
+     * How many unconfirmed records one {@link #localHistory} call will look up.
+     * A bound, not a policy: history is refreshed on every dashboard tick, and
+     * without one a long-abandoned devnet's worth of stuck records would issue
+     * an unbounded burst of node calls each time. Records beyond the bound are
+     * still listed — they just settle over the next few refreshes.
+     */
+    private static final int MAX_RECONCILE_LOOKUPS = 20;
+
+    /**
+     * Marks a "failed" that is only a timeout, so {@link #isRecoverable} can tell
+     * it apart from a rejection the node actually reported. A sentinel rather
+     * than a parsed field because the message is already persisted in every
+     * existing wallet's store — matching it keeps those records recoverable too.
+     */
+    private static final String TIMEOUT_ERROR_PREFIX = "Not seen on chain within";
+
+    private static String timeoutMessage() {
+        return TIMEOUT_ERROR_PREFIX + " " + (PENDING_TIMEOUT_MILLIS / 60000) + " minutes";
+    }
+
+    /**
+     * The wallet's own record of the transactions it sent, brought up to date
+     * against the node. This is what History falls back to when the backend
+     * serves no transaction index (ADR-043) — every published Yano release.
+     *
+     * <p>Reconciling here rather than only in {@link #trackConfirmation} is what
+     * makes the fallback survive a restart: the tracker dies with the process, so
+     * a transaction submitted and then quit on would sit unconfirmed forever and
+     * age into "failed" despite being in a block.
+     *
+     * <p>Returned newest-submitted first; callers decide how to present it.
+     */
+    public List<PendingTransaction> localHistory(String walletId, String networkId, long nowEpochMillis) {
+        List<PendingTransaction> records = pendingStore.list(walletId, networkId);
+        // Asked once for the whole page, not per record: it is one answer about
+        // the node, and it decides whether ANY record may expire.
+        boolean mayExpire = nodeIsAtTheTip();
+        // Two passes so the budget goes where it matters. In-flight records are
+        // the ones a user is watching; already-failed ones are re-checked only
+        // with what is left over, so a devnet-reset wallet full of dead records
+        // cannot starve the transaction that was just sent.
+        Map<String, PendingTransaction> settled = new LinkedHashMap<>();
+        int lookups = 0;
+        for (PendingTransaction record : records) {
+            if (record.awaitsConfirmation() && lookups < MAX_RECONCILE_LOOKUPS) {
+                lookups++;
+                settled.put(record.txHash(), reconcile(record, nowEpochMillis, mayExpire));
+            }
+        }
+        for (PendingTransaction record : records) {
+            if (!settled.containsKey(record.txHash()) && isRecoverable(record)
+                    && lookups < MAX_RECONCILE_LOOKUPS) {
+                lookups++;
+                settled.put(record.txHash(), reconcile(record, nowEpochMillis, false));
+            }
+        }
+        List<PendingTransaction> reconciled = new ArrayList<>(records.size());
+        for (PendingTransaction record : records) {
+            reconciled.add(settled.getOrDefault(record.txHash(), record));
+        }
+        return List.copyOf(reconciled);
+    }
+
+    /**
+     * True for a record whose "failed" is a <em>guess</em> that a later look
+     * could overturn — one the wallet timed out on, rather than one the node
+     * rejected outright.
+     *
+     * <p>Without this a wrong verdict is permanent: {@link
+     * PendingTransaction#awaitsConfirmation()} is false once failed, so nothing
+     * ever looks again, and a transaction that did reach the chain reads "failed"
+     * for the life of the wallet. That is not hypothetical — every transaction
+     * submitted to a node behind the tip used to be marked failed at the
+     * five-minute mark, and the record outlived the sync that would have
+     * vindicated it.
+     *
+     * <p>A transaction the node rejected keeps its real reason and is left alone;
+     * re-asking about it would only ever get the same 404.
+     */
+    private static boolean isRecoverable(PendingTransaction record) {
+        return record.status() == PendingTransactionStatus.FAILED
+                && record.lastError() != null
+                && record.lastError().startsWith(TIMEOUT_ERROR_PREFIX);
+    }
+
+    /**
+     * True when the node's UTxO index has caught up with the chain tip.
+     *
+     * <p>Gates expiry, because the five-minute timeout silently assumes the node
+     * can see the tip. A node still catching up cannot: the transaction is in the
+     * mempool and may already be in a block, but the index has not reached that
+     * block yet, so {@code /txs/{hash}} truthfully answers "not found". Expiring
+     * on that would mark a perfectly good transaction failed — and it is exactly
+     * the state a wallet is in right after a first sync, which is when users send
+     * their first transaction.
+     *
+     * <p>Balance recovers on its own as the index advances — it is read straight
+     * from the persisted UTxO set — so the two readings drift apart during a
+     * catch-up and only the status one can be made permanently wrong.
+     *
+     * <p>A node that cannot be asked counts as not at the tip — the cautious
+     * reading, since the cost of guessing wrong is a false "failed".
+     */
+    private boolean nodeIsAtTheTip() {
+        try {
+            return nodeStatusPort.status().caughtUp();
+        } catch (RuntimeException e) {
+            return false;
+        }
+    }
+
+    /**
+     * Settles one unconfirmed record against the node: confirmed if the node has
+     * it in a block, failed if it has run out of time, unchanged otherwise.
+     *
+     * <p>A failed lookup leaves the record alone rather than letting it expire.
+     * Calling a live transaction "failed" because the node was briefly
+     * unreachable is the one outcome worth going out of the way to avoid — the
+     * record is the user's only evidence the transaction was ever sent.
+     *
+     * <p>{@code mayExpire} is false while the node is behind the tip; see
+     * {@link #nodeIsAtTheTip()}.
+     *
+     * <p>Known gap: this resolves through {@code /txs/{hash}}, which is served
+     * out of the UTxO index. That index keeps spent outputs only for ~2160
+     * blocks (~12 hours), so a transaction whose outputs were all spent longer
+     * ago than that reads as unknown and eventually expires. It takes a wallet
+     * closed across both the spend and that window.
+     */
+    private PendingTransaction reconcile(PendingTransaction record, long nowEpochMillis,
+                                        boolean mayExpire) {
+        try {
+            NodeStatusPort.TxStatusView status = nodeStatusPort.txStatus(record.txHash());
+            if (status.state() == NodeStatusPort.TxState.IN_BLOCK) {
+                return pendingStore.save(record.markConfirmed(status.slot(), status.blockHeight(),
+                        status.blockHash(), status.blockTime()));
+            }
+        } catch (RuntimeException e) {
+            return record;
+        }
+        if (mayExpire && record.isStale(nowEpochMillis, PENDING_TIMEOUT_MILLIS)) {
+            return pendingStore.save(record.markFailed(timeoutMessage()));
+        }
+        return record;
+    }
+
+    /**
      * Polls the node until the transaction lands in a block; survives
      * transient node errors and marks the pending record confirmed. Does NOT
      * touch the unlocked session/keys, so it is safe to keep running after the
@@ -213,7 +362,8 @@ public class WalletService {
                 if (status.state() == NodeStatusPort.TxState.IN_BLOCK) {
                     pendingStore.find(txHash).ifPresent(pending ->
                             pendingStore.save(pending.markConfirmed(
-                                    status.slot(), status.blockHeight(), status.blockHash())));
+                                    status.slot(), status.blockHeight(), status.blockHash(),
+                                    status.blockTime())));
                     return true;
                 }
             } catch (RuntimeException e) {

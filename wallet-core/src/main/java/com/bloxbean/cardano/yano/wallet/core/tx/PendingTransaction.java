@@ -20,6 +20,7 @@ public record PendingTransaction(
         Long confirmedSlot,
         Long confirmedBlock,
         String confirmedBlockHash,
+        Long confirmedBlockTimeEpochSeconds,
         String lastError) {
 
     public PendingTransaction {
@@ -57,6 +58,7 @@ public record PendingTransaction(
                 null,
                 null,
                 null,
+                null,
                 null);
     }
 
@@ -71,7 +73,7 @@ public record PendingTransaction(
         return new PendingTransaction(
                 txHash, null, now, now, PendingTransactionStatus.PENDING,
                 walletId, networkId, lovelace, fee, fromAddress, toAddress, ttlSlot,
-                null, null, null, null);
+                null, null, null, null, null);
     }
 
     public PendingTransaction markPending(long submittedAtEpochMillis) {
@@ -91,10 +93,12 @@ public record PendingTransaction(
                 null,
                 null,
                 null,
+                null,
                 null);
     }
 
-    public PendingTransaction markConfirmed(long slot, long blockNumber, String blockHash) {
+    public PendingTransaction markConfirmed(long slot, long blockNumber, String blockHash,
+                                            long blockTimeEpochSeconds) {
         return new PendingTransaction(
                 txHash,
                 signedCborHex,
@@ -111,6 +115,7 @@ public record PendingTransaction(
                 slot,
                 blockNumber,
                 blockHash,
+                blockTimeEpochSeconds > 0 ? blockTimeEpochSeconds : null,
                 null);
     }
 
@@ -128,6 +133,7 @@ public record PendingTransaction(
                 fromAddress,
                 toAddress,
                 ttlSlot,
+                null,
                 null,
                 null,
                 null,
@@ -151,6 +157,7 @@ public record PendingTransaction(
                 confirmedSlot,
                 confirmedBlock,
                 confirmedBlockHash,
+                confirmedBlockTimeEpochSeconds,
                 "Expired at slot " + currentSlot);
     }
 
@@ -183,6 +190,7 @@ public record PendingTransaction(
                 confirmedSlot,
                 confirmedBlock,
                 confirmedBlockHash,
+                confirmedBlockTimeEpochSeconds,
                 errorMessage);
     }
 

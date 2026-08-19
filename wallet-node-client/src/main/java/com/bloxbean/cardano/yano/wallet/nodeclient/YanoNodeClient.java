@@ -219,8 +219,9 @@ public class YanoNodeClient {
     }
 
     /**
-     * True once {@code GET /txs/{hash}} resolves. Prefer {@link #getTxStatus}
-     * against ADR-033 M2 nodes, which distinguishes pending from unknown.
+     * True once {@code GET /txs/{hash}} resolves — i.e. the transaction is in a
+     * block. {@link #getTxStatus} reads the same route and returns the block
+     * details with it; this is the bare predicate.
      */
     public boolean isTxOnChain(String txHash) {
         if (txHash == null || txHash.isBlank()) {
@@ -249,34 +250,91 @@ public class YanoNodeClient {
         }
     }
 
-    /** Wallet-facing tx status from {@code GET /txs/{hash}/status} (ADR-033 M2). */
+    /**
+     * Wallet-facing tx status, read from the Blockfrost-standard
+     * {@code GET /txs/{hash}}.
+     *
+     * <p>{@code /txs/{hash}/status} — the Yano-specific ADR-033 M2 route this
+     * used to call — is <strong>deprecated and being removed</strong>, so it is
+     * not consulted at all, not even opportunistically. It was also the less
+     * available of the two while it lasted: absent from the v0.1.0-pre13 release
+     * jar, answering 503 {@code "transaction history is disabled or unavailable"}
+     * on later builds, and never present on yaci-store / Yaci DevKit.
+     * {@code /txs/{hash}} is Blockfrost-standard and present on all of them, so
+     * one route serves every backend at one call per poll.
+     *
+     * <p>Every confirmation poll used to fail against a published node, which is
+     * why a transaction sitting in a block was still shown pending and then
+     * marked failed five minutes later.
+     *
+     * <p><strong>404 and 503 are not the same answer here</strong>, unlike on the
+     * history routes ({@link #getHistoryJson}). A 404 is definitive — the node
+     * looked and does not have this transaction in a block — so it maps to
+     * UNKNOWN. A 503 means the UTxO index is switched off and the node
+     * <em>cannot look</em>; that throws, so {@code WalletService#reconcile}
+     * leaves the record untouched. Reading it as "not on chain" would mark a
+     * confirmed transaction failed on the strength of a question never asked.
+     *
+     * <p>What this route cannot distinguish is "in the mempool" from "never
+     * seen": a transaction appears only once it is in a block, so both read as
+     * UNKNOWN. Nothing depends on that — callers act on IN_BLOCK, and the wallet
+     * already knows locally what it submitted. Confirmations are not derivable
+     * and are reported as 0.
+     *
+     * <p>Limitation: the route is served out of the UTxO index
+     * ({@code getOutputsByTxHash}), which scans both the unspent and the spent
+     * column families — but the spent one is pruned at {@code
+     * utxo.prune.pruneDepth} (2160 blocks, roughly 12 hours). So a transaction
+     * resolves while any output is unspent, or was spent within that window, and
+     * 404s permanently afterwards. Fine for reconciling a recent submission;
+     * not a basis for reading history.
+     */
     public TxStatus getTxStatus(String txHash) {
         if (txHash == null || txHash.isBlank()) {
             throw new IllegalArgumentException("txHash is required");
         }
-        JsonNode root = getJson("txs/" + txHash + "/status");
+        // getJsonOrNull nulls on 404 and throws on anything else non-200 —
+        // exactly the split described above. Do not "helpfully" widen it.
+        JsonNode tx = getJsonOrNull("txs/" + txHash);
+        if (tx == null) {
+            return new TxStatus(txHash, "unknown", -1, 0, null, 0, 0);
+        }
         return new TxStatus(
-                root.path("tx_hash").asText(txHash),
-                root.path("status").asText("unknown"),
-                root.path("block_height").asLong(-1),
-                root.path("slot").asLong(0),
-                root.hasNonNull("block_hash") ? root.path("block_hash").asText() : null,
-                root.path("confirmations").asLong(0),
-                root.path("block_time").asLong(0));
+                tx.path("hash").asText(txHash),
+                "in_block",
+                tx.path("block_height").asLong(-1),
+                tx.path("slot").asLong(0),
+                tx.hasNonNull("block") ? tx.path("block").asText() : null,
+                0,
+                tx.path("block_time").asLong(0));
     }
 
-    /** Account-level tx history from {@code GET /accounts/{stake}/transactions}. */
+    /**
+     * Account-level tx history from {@code GET /accounts/{stake}/transactions},
+     * or {@code null} when the backend has no history to serve.
+     *
+     * <p>Null rather than an empty list, because the two mean opposite things to
+     * the caller. No published Yano release serves this route at all, so its
+     * absence is the normal answer there and must reach the UI as "this node has
+     * no transaction index" (ADR-043) — not as an error, and not as "you have no
+     * transactions". A backend that DOES serve it answers 200 with {@code []}
+     * for an account with nothing in it.
+     */
     public java.util.List<AddressTx> getAccountTransactions(String stakeAddress, int page, int count, String order) {
-        JsonNode root = getJson("accounts/" + stakeAddress + "/transactions?page=" + page
+        JsonNode root = getHistoryJson("accounts/" + stakeAddress + "/transactions?page=" + page
                 + "&count=" + count + "&order=" + order);
-        return parseAddressTxs(root);
+        return root == null ? null : parseAddressTxs(root);
     }
 
-    /** Address tx history from {@code GET /addresses/{address}/transactions}. */
+    /**
+     * Address tx history from {@code GET /addresses/{address}/transactions}, or
+     * {@code null} when the backend has no history to serve — see {@link
+     * #getAccountTransactions} for why the distinction matters.
+     */
     public java.util.List<AddressTx> getAddressTransactions(String address, int page, int count, String order) {
-        JsonNode root = getJson("addresses/" + address + "/transactions?page=" + page
+        JsonNode root = getHistoryJson("addresses/" + address + "/transactions?page=" + page
                 + "&count=" + count + "&order=" + order);
-        return parseAddressTxs(root);
+        return root == null ? null : parseAddressTxs(root);
     }
 
     /**
@@ -962,6 +1020,39 @@ public class YanoNodeClient {
         } catch (InterruptedException e) {
             Thread.currentThread().interrupt();
             throw new NodeClientException("Interrupted while calling Yano node at " + uri, e);
+        }
+    }
+
+    /**
+     * A history read: the JSON body, or {@code null} when the backend has no
+     * history to serve — 404 for a route that is not there, 503 for one that is
+     * there but switched off.
+     *
+     * <p>The 503 is not hypothetical. Yano builds after the v0.1.0-pre13 release
+     * serve these routes behind per-dataset switches and answer, verbatim,
+     * {@code {"error":"Reward history disabled (enable
+     * yano.history.datasets.rewards.enabled)"}}. An operator's "off" is a
+     * permanent-until-reconfigured absence, not a hiccup, and treating it as an
+     * error would put the raw 503 back on the History screen — the exact
+     * regression this fallback exists to end.
+     *
+     * <p>Safe even when a 503 IS transient (a node still initialising), because
+     * nothing caches this: the answer is re-derived on every refresh, so a node
+     * that comes good takes over from the fallback on its own.
+     */
+    private JsonNode getHistoryJson(String path) {
+        RawResponse response = getRaw(path, requestTimeout);
+        if (response.status() == 404 || response.status() == 503) {
+            return null;
+        }
+        if (response.status() != 200) {
+            throw new NodeClientException("GET " + baseUri.resolve(path)
+                    + " failed with status " + response.status());
+        }
+        try {
+            return objectMapper.readTree(response.body());
+        } catch (IOException e) {
+            throw new NodeClientException("Unreadable response from " + baseUri.resolve(path), e);
         }
     }
 
