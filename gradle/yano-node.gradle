@@ -22,7 +22,7 @@
 // So local dev and offline builds never hit the network, and CI downloads once
 // per version bump (cache the directory keyed on yanoVersion).
 
-def yanoVersion = project.findProperty('yanoVersion') ?: '0.1.0-pre12'
+def yanoVersion = project.findProperty('yanoVersion') ?: '0.1.0-pre13'
 def cacheRoot = new File(gradle.gradleUserHomeDir, "yano-dist")
 def distDir = new File(cacheRoot, "yano-${yanoVersion}")
 def zipName = "yano-${yanoVersion}.zip"
