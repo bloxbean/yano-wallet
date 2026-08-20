@@ -764,7 +764,7 @@ public class DefaultWalletUiController implements WalletUiController {
             } else {
                 try {
                     var socketServer = new com.bloxbean.cardano.yano.wallet.connector.Cip30LocalSocketServer(
-                            new NativeMessagingInstaller().socketPath(), wallet, approvals);
+                            new NativeMessagingInstaller(backendManager.dataDir()).socketPath(), wallet, approvals);
                     socketServer.start();
                     connectorSocketServer = socketServer;
                 } catch (Exception e) {
@@ -909,7 +909,7 @@ public class DefaultWalletUiController implements WalletUiController {
     public CompletableFuture<String> installNativeMessagingHost() {
         return async(() -> {
             try {
-                return new NativeMessagingInstaller().install();
+                return new NativeMessagingInstaller(backendManager.dataDir()).install();
             } catch (java.io.IOException e) {
                 throw new IllegalStateException(e.getMessage(), e);
             }

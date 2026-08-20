@@ -38,6 +38,13 @@ nothing until you click — a local node can sync for a long time, so that shoul
 follow from a decision rather than from opening the app. `--auto-connect`
 restores the old one-click behaviour.
 
+Everything the wallet owns lives under its data directory — `~/.yano-wallet/`
+by default, or wherever `--data-dir` points. That includes the CIP-30 browser
+connector (`<data-dir>/connector/`), so two wallets started with different data
+directories no longer contend for one socket. The browser manifest holds an
+absolute path to the host script, so re-run **Install browser connector** after
+moving the app or switching data directory.
+
 Wallet data lives in `~/.yano-wallet/<network>/` (never point `--data-dir` at
 `/tmp` — the OS reaps it and corrupts the node database).
 

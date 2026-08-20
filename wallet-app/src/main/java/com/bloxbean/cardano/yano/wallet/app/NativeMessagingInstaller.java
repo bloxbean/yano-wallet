@@ -31,13 +31,42 @@ final class NativeMessagingInstaller {
     static final String EXTENSION_ID = "bjnkcmbkjaebecgllkgbeapbjcknnedn";
 
     private final Path yanoDir;
+    /**
+     * Where the browser keeps its NativeMessagingHosts directories — the real
+     * user home, NOT anything derived from the data directory.
+     *
+     * <p>Kept separate deliberately. Connector files follow {@code --data-dir},
+     * but browser registration is machine-level: one manifest per browser,
+     * whatever data directory installed it. Deriving this from the connector
+     * path (as this once did, via {@code yanoDir.getParent()}) silently wrote
+     * manifests to {@code <dataDir>/Library/Application Support/...} once the
+     * connector moved out of {@code ~/.yano}.
+     */
+    private final Path browserHome;
 
     NativeMessagingInstaller() {
-        this(Path.of(System.getProperty("user.home"), ".yano"));
+        this(Path.of(System.getProperty("user.home"), ".yano-wallet"));
     }
 
-    NativeMessagingInstaller(Path yanoDir) {
-        this.yanoDir = yanoDir;
+    /**
+     * @param dataDir the wallet's data directory (default {@code ~/.yano-wallet},
+     *                or whatever {@code --data-dir} selected). Connector files
+     *                live under {@code <dataDir>/connector}.
+     *
+     * <p>These used to sit in a hardcoded {@code ~/.yano}, which meant
+     * {@code --data-dir} did not isolate them: two wallets with separate data
+     * directories contended for one socket, and a dApp reached whichever bound
+     * it rather than the instance the user was looking at. It also squatted the
+     * obvious directory name for the Yano <em>node</em>.
+     */
+    NativeMessagingInstaller(Path dataDir) {
+        this(dataDir, Path.of(System.getProperty("user.home")));
+    }
+
+    /** @param browserHome overridden by tests; production always uses the real home. */
+    NativeMessagingInstaller(Path dataDir, Path browserHome) {
+        this.yanoDir = dataDir.resolve("connector");
+        this.browserHome = browserHome;
     }
 
     /** Where the wallet's native-messaging socket lives — shared with the server. */
@@ -168,7 +197,7 @@ final class NativeMessagingInstaller {
 
     private List<Path> browserHostDirs() {
         String os = System.getProperty("os.name", "").toLowerCase(Locale.ROOT);
-        Path home = yanoDir.getParent() != null ? yanoDir.getParent() : Path.of(System.getProperty("user.home"));
+        Path home = browserHome;
         if (os.contains("mac")) {
             Path support = home.resolve("Library/Application Support");
             return List.of(
