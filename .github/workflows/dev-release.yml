@@ -118,6 +118,9 @@ jobs:
             wallet-app/build/dist/*.deb
             wallet-app/build/dist/*.zip
           if-no-files-found: error
+          # Short-lived on purpose: dev builds are handed round for a quick test
+          # and the zips are large. Re-run the workflow to get a fresh copy.
+          retention-days: 2
 
   native:
     if: ${{ inputs.build_native }}
@@ -231,3 +234,4 @@ jobs:
           name: dev-native-${{ steps.ver.outputs.version }}-${{ matrix.platform }}
           path: wallet-app/build/dist/yano-wallet-native-*.zip
           if-no-files-found: error
+          retention-days: 2

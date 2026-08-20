@@ -173,6 +173,10 @@ jobs:
           name: yano-wallet-native-${{ steps.ver.outputs.version }}-${{ matrix.platform }}
           path: wallet-app/build/dist/yano-wallet-native-*.zip
           if-no-files-found: error
+          # Short-lived on purpose: these are throwaway build outputs, and the
+          # zips are large. Does NOT affect assets attached to a GitHub Release —
+          # those are permanent and are published by action-gh-release below.
+          retention-days: 2
 
       - name: Attach to the GitHub Release (tag builds only)
         if: startsWith(github.ref, 'refs/tags/')
