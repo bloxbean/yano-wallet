@@ -307,6 +307,10 @@ tasks.register('walletZip', Zip) {
     destinationDirectory = layout.buildDirectory.dir('dist')
     def distRoot = "yano-wallet-${project.version}"
     into(distRoot) {
+        // First thing a new user needs: how to get from this zip to a connected
+        // dApp. Shipped in the archive rather than only linked, because someone
+        // who downloaded a zip is not necessarily looking at the repository.
+        from(rootProject.file('GETTING-STARTED.md'))
         into('lib') {
             from configurations.runtimeClasspath
             from tasks.named('jar')
@@ -518,6 +522,7 @@ tasks.register('nativeZip', Zip) {
     from('src/dist-native') {
         filePermissions { unix('rwxr-xr-x') }
     }
+    from(rootProject.file('GETTING-STARTED.md'))
     doFirst {
         if (bundleNode && !rootProject.yanoNativeRequested) {
             logger.warn("nativeZip is bundling the JVM Yano distribution, which needs a JRE the "
