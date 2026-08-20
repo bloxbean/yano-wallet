@@ -131,10 +131,26 @@ public final class Ui {
     }
 
     /** Runs the future's result (or error) on the FX thread. */
+    /**
+     * Bridges a controller future onto the FX thread.
+     *
+     * <p>Failures are ALWAYS logged here, in addition to being handed to
+     * {@code onError} for display. Every screen funnels through this method, so
+     * this is the one place that guarantees a failure leaves a trace.
+     *
+     * <p>This is not defensive tidiness. Without it a failure exists only as
+     * text in a toast the user cannot copy and a stack trace nobody ever sees —
+     * during the native-image work three separate bugs (Jackson vault
+     * deserialisation, JNA/hid4java init, and node discovery) each cost a
+     * round-trip purely because the log was silent.
+     */
     public static <T> void onFx(CompletableFuture<T> future, Consumer<T> onSuccess, Consumer<Throwable> onError) {
         future.whenComplete((value, error) -> Platform.runLater(() -> {
             if (error != null) {
-                onError.accept(unwrap(error));
+                Throwable cause = unwrap(error);
+                System.err.println("[ui] operation failed: " + cause);
+                cause.printStackTrace();
+                onError.accept(cause);
             } else {
                 onSuccess.accept(value);
             }
