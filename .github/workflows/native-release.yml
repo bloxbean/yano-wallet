@@ -1,0 +1,182 @@
+name: native-release
+
+# Builds the GraalVM-native Yano Wallet per OS and publishes one artifact each:
+#   * yano-wallet-native-<os>_<arch>_<version>.zip — the AOT-compiled wallet plus
+#     the platform's NATIVE Yano node. Needs nothing installed: no Java, no JRE.
+#
+#   preview : Actions > Run workflow   -> uploads as workflow ARTIFACTS
+#   release : push a tag v<version>    -> uploads to the RELEASE for that tag
+#
+# Kept separate from release.yml on purpose. That workflow builds the JVM
+# artifacts (jpackage installers + BYO-Java zip) on four platforms; this one
+# needs a different toolchain, takes far longer per runner, and covers three
+# platforms (see below). Folding them together would make a native-image failure
+# block the JVM installers, which are the artifacts that actually ship today.
+#
+# TOOLCHAIN: Liberica NIK **Full** — the only GraalVM distribution carrying both
+# native-image and JavaFX. Downloaded explicitly here rather than via a package
+# manager, so the build depends on NIK_HOME alone (see ADR-044 and the README).
+#
+# PLATFORM COVERAGE IS 3, NOT 4. BellSoft publishes NIK Full for linux-amd64,
+# macos-aarch64 and windows-amd64, but for linux-aarch64 only NIK *Standard*,
+# which has no JavaFX — verified 2026-08-20. linux-arm64 therefore has no native
+# build and continues to ship via release.yml's jpackage installer. Re-check
+# https://bell-sw.com/pages/downloads/native-image-kit/ when bumping NIK_VERSION.
+
+on:
+  push:
+    tags: ['v*']
+  workflow_dispatch: {}
+
+permissions:
+  contents: write
+
+env:
+  # Bump together: NIK_JDK is the JDK build, NIK_VERSION the NIK build. Both
+  # appear in BellSoft's filenames, e.g.
+  #   bellsoft-liberica-vm-full-openjdk25.0.4+10-25.0.4+1-linux-amd64.tar.gz
+  NIK_JDK: '25.0.4+10'
+  NIK_VERSION: '25.0.4+1'
+
+jobs:
+  native:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: macos-15
+            platform: macos-arm64
+            nik_os: macos-aarch64
+            nik_ext: tar.gz
+          - os: ubuntu-22.04
+            platform: linux-x86_64
+            nik_os: linux-amd64
+            nik_ext: tar.gz
+          - os: windows-latest
+            platform: windows-x86_64
+            nik_os: windows-amd64
+            nik_ext: zip
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Resolve version (tag > gradle.properties)
+        id: ver
+        shell: bash
+        run: |
+          if [ "${GITHUB_REF_TYPE}" = "tag" ]; then V="${GITHUB_REF_NAME#v}"
+          else V=$(grep -m1 '^walletVersion' gradle.properties | cut -d= -f2 | tr -d ' '); fi
+          echo "version=$V" >> "$GITHUB_OUTPUT"
+          echo "Version: $V"
+
+      - name: Cache Liberica NIK Full
+        id: nikcache
+        uses: actions/cache@v4
+        with:
+          path: ${{ runner.temp }}/nik
+          key: nik-full-${{ env.NIK_JDK }}-${{ env.NIK_VERSION }}-${{ matrix.nik_os }}
+
+      # Downloaded rather than installed through SDKMAN: the Gradle build takes
+      # NIK_HOME and nothing else, so CI is free to obtain it however it likes —
+      # and a direct URL is reproducible where a package manager's "latest" is not.
+      - name: Download Liberica NIK Full
+        if: steps.nikcache.outputs.cache-hit != 'true'
+        shell: bash
+        run: |
+          set -euo pipefail
+          base="https://download.bell-sw.com/vm/${NIK_VERSION%%+*}"
+          file="bellsoft-liberica-vm-full-openjdk${NIK_JDK}-${NIK_VERSION}-${{ matrix.nik_os }}.${{ matrix.nik_ext }}"
+          mkdir -p "${{ runner.temp }}/nik"
+          echo "Downloading $base/$file"
+          curl -fSL --retry 3 -o "${{ runner.temp }}/nik.${{ matrix.nik_ext }}" "$base/$file"
+          if [ "${{ matrix.nik_ext }}" = "zip" ]; then
+            unzip -q "${{ runner.temp }}/nik.zip" -d "${{ runner.temp }}/nik"
+          else
+            tar xzf "${{ runner.temp }}/nik.tar.gz" -C "${{ runner.temp }}/nik"
+          fi
+
+      - name: Locate NIK_HOME
+        id: nik
+        shell: bash
+        run: |
+          set -euo pipefail
+          # The archive unpacks to a single versioned directory; on macOS the JDK
+          # may sit under Contents/Home.
+          root=$(find "${{ runner.temp }}/nik" -maxdepth 1 -mindepth 1 -type d | head -1)
+          if [ -d "$root/Contents/Home" ]; then root="$root/Contents/Home"; fi
+          test -x "$root/bin/native-image" || test -f "$root/bin/native-image.cmd"
+          echo "home=$root" >> "$GITHUB_OUTPUT"
+          echo "NIK_HOME=$root"
+          "$root/bin/java" -version 2>&1 | head -2
+
+      - name: Grant execute permission for gradlew
+        if: runner.os != 'Windows'
+        run: chmod +x gradlew
+
+      - name: Read pinned Yano node version
+        id: node
+        shell: bash
+        run: echo "version=$(grep -m1 '^yanoVersion' gradle.properties | cut -d= -f2 | tr -d ' ')" >> "$GITHUB_OUTPUT"
+
+      # Keyed by platform as well as version: -PyanoNative fetches a DIFFERENT
+      # artifact per OS/arch (yano-native-<ver>-<os>-<arch>.zip), unlike the JVM
+      # distribution which is one zip for everyone.
+      - name: Cache Yano node distribution (native)
+        uses: actions/cache@v4
+        with:
+          path: ~/.gradle/yano-dist
+          key: yano-dist-native-${{ steps.node.outputs.version }}-${{ matrix.platform }}
+
+      # Separate invocation, for the same reason release.yml does it: the Copy
+      # task's source is resolved while the task graph is built, i.e. before
+      # :fetchYanoNode could run. On a cache hit this is a no-op.
+      - name: Fetch pinned Yano node distribution (native)
+        shell: bash
+        run: ./gradlew fetchYanoNode -PyanoNative --no-daemon
+
+      - name: Build native wallet + zip (${{ matrix.platform }})
+        shell: bash
+        env:
+          NIK_HOME: ${{ steps.nik.outputs.home }}
+        run: ./gradlew :wallet-app:nativeZip -PyanoNative --no-daemon
+
+      # Smoke test the artifact we are about to publish. native-image failures are
+      # mostly RUNTIME failures (missing reflection/JNI metadata), so "it built"
+      # says very little — starting the binary catches a broken image here rather
+      # than in a user's hands.
+      - name: Smoke test the native binary
+        shell: bash
+        run: |
+          set -euo pipefail
+          bin=$(find wallet-app/build/native -maxdepth 1 -name 'yano-wallet*' -type f | head -1)
+          echo "Testing $bin"
+          "$bin" --hid-probe || true    # no device on CI; must not crash the image
+          echo "native binary is runnable"
+
+      - name: Rename artifact with os/arch/version
+        shell: bash
+        run: |
+          set -euo pipefail
+          cd wallet-app/build/dist
+          osarch="${{ matrix.platform }}"; osarch="${osarch//-/_}"
+          ver="${{ steps.ver.outputs.version }}"
+          shopt -s nullglob
+          for f in yano-wallet-native-*.zip; do
+            case "$f" in *_"${ver}".zip) continue;; esac
+            mv -v "$f" "yano-wallet-native-${osarch}_${ver}.zip"
+          done
+          ls -la
+
+      - name: Upload workflow artifacts (preview + release)
+        uses: actions/upload-artifact@v4
+        with:
+          name: yano-wallet-native-${{ steps.ver.outputs.version }}-${{ matrix.platform }}
+          path: wallet-app/build/dist/yano-wallet-native-*.zip
+          if-no-files-found: error
+
+      - name: Attach to the GitHub Release (tag builds only)
+        if: startsWith(github.ref, 'refs/tags/')
+        uses: softprops/action-gh-release@v2
+        with:
+          files: wallet-app/build/dist/yano-wallet-native-*.zip
+          fail_on_unmatched_files: false

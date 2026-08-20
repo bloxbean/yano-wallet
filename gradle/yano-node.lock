@@ -1,3 +1,5 @@
-# sha256 of the Yano release zip, recorded when a version is pinned.
-# Print it with: ./gradlew fetchYanoNode yanoNodeChecksum -PyanoVersion=<version>
-0.1.0-pre13=1d280bbed66f1824e779a12f26ef1f565bebbd31dac994136936e2810b506746
+# sha256 per release ARTIFACT (not per version): the native builds are one zip
+# per platform, so a single per-version entry cannot cover them.
+# Print it with: ./gradlew fetchYanoNode yanoNodeChecksum [-PyanoNative]
+yano-0.1.0-pre13=1d280bbed66f1824e779a12f26ef1f565bebbd31dac994136936e2810b506746
+yano-native-0.1.0-pre13-macos-arm64=8d683e2b3b11a2fb56cd1762675b841a3c0739e3d9e78d0b3c2a1b784741dc62

@@ -39,9 +39,45 @@ public final class YanoWalletApp {
         Path dataDirRoot = Paths.get(expandHome(opts.getOrDefault("data-dir",
                 System.getProperty("user.home") + "/.yano-wallet")));
 
+        // --cip30-proxy <socket>: act as the CIP-30 Native Messaging host and
+        // relay stdio to the wallet's local socket. Chrome launches this per dApp
+        // connection. On a JVM build the installer points Chrome at
+        // `java -cp cip30-proxy.jar …`; a native build has no JVM, so the wallet
+        // binary hosts the same relay itself. Must run before any UI setup —
+        // Chrome speaks a binary protocol on stdout and a stray log line corrupts it.
+        if (opts.containsKey("cip30-proxy")) {
+            com.bloxbean.cardano.yano.wallet.connector.proxy.Cip30NativeProxy
+                    .main(new String[]{opts.get("cip30-proxy")});
+            return;
+        }
+
         // Before anything else can log: a packaged app has no console, so without
         // this a failure that happens before the node starts leaves no trace.
         WalletLog.install(dataDirRoot);
+
+        // --hid-probe: enumerate USB HID devices and exit, without starting the
+        // UI. Exists because hardware-wallet faults are otherwise reachable only
+        // by clicking through the Connect dialog, which cannot be scripted — and
+        // under a native image that made a JNA/JNI fault take a full rebuild plus
+        // a manual click per attempt. Same binary, same code path, headless.
+        if (opts.containsKey("hid-probe")) {
+            System.exit(runHidProbe());
+        }
+        // --vault-probe=<walletId> --network=<net>: read the vault envelope and
+        // report its second-factor status. Parsing happens BEFORE any decryption,
+        // so this verifies a v4 (hardware-factored) vault is readable without
+        // needing the passphrase or the key — which is exactly what broke when
+        // the nested Slot type was unregistered.
+        if (opts.containsKey("vault-probe")) {
+            System.exit(runVaultProbe(dataDirRoot, opts));
+        }
+        // --utxo-probe=<address> --base-url=<url>: fetch UTxOs through the same
+        // CCL supplier the balance screen uses. Native images fail on unregistered
+        // DTO constructors only when a response is NON-EMPTY, so an empty-wallet
+        // test passes while a funded one does not — this makes that verifiable.
+        if (opts.containsKey("utxo-probe")) {
+            System.exit(runUtxoProbe(opts));
+        }
 
         // The controller resolves its node connection lazily via the manager;
         // the UI's Connect screen (or the CLI pre-seed below) drives it.
@@ -216,6 +252,68 @@ public final class YanoWalletApp {
             return System.getProperty("user.home") + path.substring(1);
         }
         return path;
+    }
+
+    /** Reads a vault envelope and reports its factor status (no passphrase needed). */
+    private static int runVaultProbe(java.nio.file.Path dataDirRoot, Map<String, String> opts) {
+        try {
+            var network = com.bloxbean.cardano.yano.wallet.core.config.WalletNetwork
+                    .fromId(opts.getOrDefault("network", "preprod"));
+            var repo = new com.bloxbean.cardano.yano.wallet.core.wallet.FileStoredWalletRepository(
+                    dataDirRoot.resolve(network.id()), network);
+            String id = opts.get("vault-probe");
+            var factors = repo.walletFactors(id);
+            System.out.println("VAULT-PROBE OK: " + id + " factors=" + factors);
+            return 0;
+        } catch (Throwable t) {
+            System.out.println("VAULT-PROBE FAILED: " + t);
+            t.printStackTrace();
+            return 1;
+        }
+    }
+
+    /** Fetches UTxOs for an address through the same CCL supplier the UI uses. */
+    private static int runUtxoProbe(Map<String, String> opts) {
+        try {
+            var network = com.bloxbean.cardano.yano.wallet.core.config.WalletNetwork
+                    .fromId(opts.getOrDefault("network", "preprod"));
+            var backend = com.bloxbean.cardano.yano.wallet.nodeclient.YanoNodeBackend
+                    .connect(network, opts.get("base-url"));
+            var utxos = backend.utxoSupplier().getAll(opts.get("utxo-probe"));
+            System.out.println("UTXO-PROBE OK: " + utxos.size() + " utxo(s)");
+            utxos.stream().limit(2).forEach(u -> System.out.println("  " + u));
+            return 0;
+        } catch (Throwable t) {
+            System.out.println("UTXO-PROBE FAILED: " + t);
+            t.printStackTrace();
+            return 1;
+        }
+    }
+
+    /** Enumerates HID devices through the same service the Connect dialog uses. */
+    private static int runHidProbe() {
+        try {
+            var service = new com.bloxbean.cardano.yano.wallet.hardware.ledger
+                    .LedgerHardwareWalletService();
+            var devices = service.enumerate();
+            System.out.println("HID-PROBE: enumerated " + devices.size() + " device(s)");
+            devices.forEach(d -> System.out.println("  " + d));
+            if (devices.isEmpty()) {
+                System.out.println("HID-PROBE OK (no device attached; open not exercised)");
+                return 0;
+            }
+            // Enumeration alone does NOT open the device, and opening is where JNA
+            // maps HidDeviceStructure — a different set of reflective field
+            // accesses. Probing only enumerate() reports success while Connect
+            // still fails, so go all the way to talking to the device.
+            var version = service.getCardanoAppVersion(devices.get(0));
+            System.out.println("HID-PROBE OK: opened device, Cardano app version " + version);
+            return 0;
+        } catch (Throwable t) {
+            System.out.println("HID-PROBE FAILED: " + t);
+            t.printStackTrace();
+            return 1;
+        }
     }
 
     private static Map<String, String> parseOptions(String[] args) {

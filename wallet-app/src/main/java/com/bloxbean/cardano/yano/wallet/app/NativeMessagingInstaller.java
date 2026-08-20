@@ -8,6 +8,7 @@ import java.nio.file.StandardCopyOption;
 import java.nio.file.attribute.PosixFilePermission;
 import java.util.ArrayList;
 import java.util.List;
+import java.util.Optional;
 import java.util.Locale;
 import java.util.Set;
 
@@ -73,6 +74,11 @@ final class NativeMessagingInstaller {
         Path target = yanoDir.resolve("cip30-proxy.jar");
         try (InputStream in = NativeMessagingInstaller.class.getResourceAsStream("/native-host/cip30-proxy.jar")) {
             if (in == null) {
+                // A native build does not need it: the wallet binary hosts the
+                // relay itself. Only a JVM build genuinely requires the jar.
+                if (nativeImageBinary().isPresent()) {
+                    return target;
+                }
                 throw new IOException("Bundled proxy jar missing from the app build");
             }
             Files.copy(in, target, StandardCopyOption.REPLACE_EXISTING);
@@ -81,9 +87,48 @@ final class NativeMessagingInstaller {
     }
 
     private Path writeLauncherScript(Path proxyJar) throws IOException {
-        Path java = Path.of(System.getProperty("java.home"), "bin", "java");
         Path script = yanoDir.resolve("cip30-host.sh");
-        String content = """
+        String content = nativeImageBinary()
+                .map(this::nativeLauncher)
+                .orElseGet(() -> jvmLauncher(proxyJar));
+        Files.writeString(script, content);
+        Files.setPosixFilePermissions(script, Set.of(
+                PosixFilePermission.OWNER_READ, PosixFilePermission.OWNER_WRITE, PosixFilePermission.OWNER_EXECUTE));
+        return script;
+    }
+
+    /**
+     * The wallet's own executable when running as a GraalVM native image, else
+     * empty.
+     *
+     * <p>{@code java.home} is null in a native image, which is how this used to
+     * fail: {@code Path.of(null, "bin", "java")} threw an NPE that surfaced as
+     * "Install failed: null". More fundamentally there is no JVM to run the
+     * bundled proxy jar with, so the native build hosts the relay itself via
+     * {@code --cip30-proxy}.
+     */
+    private static Optional<Path> nativeImageBinary() {
+        if (System.getProperty("java.home") != null) {
+            return Optional.empty();   // ordinary JVM run — use the bundled jar
+        }
+        return ProcessHandle.current().info().command().map(Path::of);
+    }
+
+    private String nativeLauncher(Path walletBinary) {
+        return """
+                #!/bin/sh
+                # Yano CIP-30 Native Messaging host — written by the Yano wallet.
+                # Chrome launches this per dApp connection; it relays stdio to the
+                # wallet's local socket. This is the NATIVE build, so the wallet
+                # binary hosts the relay itself — there is no JVM to run a jar with.
+                # Re-run 'Install browser connector' after moving or updating the app.
+                exec "%s" --cip30-proxy="%s" "$@"
+                """.formatted(walletBinary, socketPath());
+    }
+
+    private String jvmLauncher(Path proxyJar) {
+        Path java = Path.of(System.getProperty("java.home"), "bin", "java");
+        return """
                 #!/bin/sh
                 # Yano CIP-30 Native Messaging host — written by the Yano wallet.
                 # Chrome launches this per dApp connection; it relays stdio to the
@@ -91,10 +136,6 @@ final class NativeMessagingInstaller {
                 # wallet's Settings after moving or updating the app.
                 exec "%s" -cp "%s" com.bloxbean.cardano.yano.wallet.connector.proxy.Cip30NativeProxy "%s" "$@"
                 """.formatted(java, proxyJar, socketPath());
-        Files.writeString(script, content);
-        Files.setPosixFilePermissions(script, Set.of(
-                PosixFilePermission.OWNER_READ, PosixFilePermission.OWNER_WRITE, PosixFilePermission.OWNER_EXECUTE));
-        return script;
     }
 
     private List<Path> writeBrowserManifests(Path script) throws IOException {
