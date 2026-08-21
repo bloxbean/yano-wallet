@@ -1,0 +1,71 @@
+name: pages
+
+# Publishes the CIP-30 demo dapp to GitHub Pages:
+#   https://bloxbean.github.io/yano-wallet/
+#
+# It exists because GETTING-STARTED.md's last step — "open a dApp and choose
+# Yano" — has nowhere to point: the connector extension is not in the Chrome
+# Web Store, so no third-party dapp lists Yano yet. A hosted page gives a new
+# user something to verify their install against.
+#
+# Only Connect and "send to myself" run here. The Plutus lock/unlock flows read
+# cost models through the Vite dev-server proxy, which a static host has no
+# equivalent for, so the demo disables them outside `npm run dev` (see
+# src/main.ts). Connect and send need no chain provider at all.
+#
+# main only. The github-pages environment restricts deployments to the default
+# branch, so a run from a feature branch would fail the protection rule; verify
+# a branch locally with `DEMO_BASE=/yano-wallet/ npm run build && npx vite preview`.
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'wallet-connector/dev/tx-demo/**'
+      - '.github/workflows/pages.yml'
+  workflow_dispatch: {}
+
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+# Never cancel a deploy in flight: a half-published site is worse than a stale one.
+concurrency:
+  group: pages
+  cancel-in-progress: false
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    defaults:
+      run:
+        working-directory: wallet-connector/dev/tx-demo
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+
+      - name: Install
+        run: npm ci
+
+      - uses: actions/configure-pages@v5
+
+      # A project site lives under /<repo>/, so the built asset URLs must carry
+      # that prefix. Without it the page loads and the script 404s — a blank page.
+      - name: Build
+        env:
+          DEMO_BASE: /${{ github.event.repository.name }}/
+        run: npm run build
+
+      - uses: actions/upload-pages-artifact@v3
+        with:
+          path: wallet-connector/dev/tx-demo/dist
+
+      - id: deployment
+        uses: actions/deploy-pages@v4

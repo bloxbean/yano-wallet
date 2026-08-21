@@ -26,11 +26,24 @@ const lockBtn = document.getElementById("lock") as HTMLButtonElement;
 const unlockBtn = document.getElementById("unlock") as HTMLButtonElement;
 const info = document.getElementById("info") as HTMLDivElement;
 const lockInfo = document.getElementById("lockInfo") as HTMLDivElement;
+const plutusNote = document.getElementById("plutusNote") as HTMLDivElement;
 const statusEl = document.getElementById("status") as HTMLDivElement;
 const networkPicker = document.getElementById("network") as HTMLSelectElement;
 const networkHint = document.getElementById("networkHint") as HTMLDivElement;
 
 let wallet: BrowserWallet | null = null;
+
+// The Plutus flows need the chain's current cost models, and both providers are
+// pointed at a Vite dev-server proxy prefix — browser-direct calls to Koios are
+// blocked (CORS / Cloudflare) and a devnet on localhost:8080 is cross-origin
+// too (see networks.ts). A BUILT bundle has no dev server, so on the hosted
+// page those two buttons cannot work and are disabled rather than left to fail.
+//
+// Connect and send need no chain provider at all: every input comes from the
+// wallet over CIP-30, protocol params are the baked-in defaults, and submitTx
+// goes through the wallet to its own node. That is the whole CIP-30 core, and
+// it works anywhere — which is what makes a hosted demo worth having.
+const PLUTUS_AVAILABLE = import.meta.env.DEV;
 
 // --- Plutus script test (ADR-035 M4): lock at always-succeeds, then unlock. ---
 // The unlock is a genuine script transaction: script input + redeemer +
@@ -54,8 +67,15 @@ function savedLock(): { txHash: string; datumValue: string } | null {
 function refreshLockUi() {
   const lock = savedLock();
   lockInfo.textContent = lock ? "Locked ₳3 in tx " + lock.txHash.slice(0, 16) + "… (ready to unlock)" : "";
-  unlockBtn.disabled = !wallet || !lock;
-  lockBtn.disabled = !wallet;
+  unlockBtn.disabled = !PLUTUS_AVAILABLE || !wallet || !lock;
+  lockBtn.disabled = !PLUTUS_AVAILABLE || !wallet;
+}
+
+if (!PLUTUS_AVAILABLE) {
+  plutusNote.innerHTML =
+    "Unavailable on the hosted demo — the lock/unlock flows read cost models through " +
+    "the dev-server proxy. Clone the repo and run <code>npm run dev</code> in " +
+    "<code>wallet-connector/dev/tx-demo</code> to try them.";
 }
 
 function show(html: string, kind: "info" | "success" | "error") {

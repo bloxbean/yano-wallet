@@ -5,6 +5,10 @@ import path from "path";
 // MeshJS needs Node polyfills (Buffer etc.) in the browser. Mirrors the working
 // yaci-devkit meshjs example.
 export default defineConfig({
+  // GitHub Pages serves a project site from a subpath, so the built asset URLs
+  // must carry it — the default "/" 404s there. Overridden by the deploy
+  // workflow; local dev and local builds stay at the root.
+  base: process.env.DEMO_BASE || "/",
   plugins: [nodePolyfills()],
   server: {
     proxy: {
