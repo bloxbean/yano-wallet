@@ -5,17 +5,21 @@ name: pages
 #
 # It exists because GETTING-STARTED.md's last step — "open a dApp and choose
 # Yano" — has nowhere to point: the connector extension is not in the Chrome
-# Web Store, so no third-party dapp lists Yano yet. A hosted page gives a new
-# user something to verify their install against.
+# Web Store, so no third-party dapp lists Yano yet.
 #
-# Only Connect and "send to myself" run here. The Plutus lock/unlock flows read
+# Only Connect and "send to myself" run there. The Plutus lock/unlock flows read
 # cost models through the Vite dev-server proxy, which a static host has no
-# equivalent for, so the demo disables them outside `npm run dev` (see
-# src/main.ts). Connect and send need no chain provider at all.
+# equivalent for, so the demo disables them outside `npm run dev`.
 #
-# main only. The github-pages environment restricts deployments to the default
-# branch, so a run from a feature branch would fail the protection rule; verify
-# a branch locally with
+# PUBLISHES BY PUSHING A BRANCH, not with actions/deploy-pages. That action
+# looks up the artifact it just uploaded, and on the first deploy here the
+# metadata API had not caught up 292ms later — "Found 0 artifact(s)". Pushing a
+# branch has no such handoff: Pages serves whatever gh-pages contains.
+#
+# Set Settings > Pages > Source to "Deploy from a branch", branch gh-pages, / (root).
+#
+# main only, so a feature branch cannot overwrite the published site. Verify a
+# branch locally with
 #   DEMO_BASE=/yano-wallet/tx-demo/ npm run build && npx vite preview
 
 on:
@@ -27,24 +31,16 @@ on:
   workflow_dispatch: {}
 
 permissions:
-  contents: read
-  pages: write
-  id-token: write
+  contents: write        # pushes the built site to gh-pages
 
-# Never cancel a deploy in flight: a half-published site is worse than a stale one.
+# Never cancel a publish in flight: a half-pushed site is worse than a stale one.
 concurrency:
   group: pages
   cancel-in-progress: false
 
 jobs:
-  deploy:
+  publish:
     runs-on: ubuntu-latest
-    environment:
-      name: github-pages
-      url: ${{ steps.deployment.outputs.page_url }}
-    defaults:
-      run:
-        working-directory: wallet-connector/dev/tx-demo
     steps:
       - uses: actions/checkout@v4
 
@@ -55,30 +51,32 @@ jobs:
       # npm install, not npm ci: package-lock.json is gitignored here (see
       # tx-demo/.gitignore), so there is no lockfile in the repo for ci to read.
       - name: Install
+        working-directory: wallet-connector/dev/tx-demo
         run: npm install --no-audit --no-fund
-
-      - uses: actions/configure-pages@v5
 
       # A project site lives under /<repo>/, so the built asset URLs must carry
       # that prefix. Without it the page loads and the script 404s — a blank page.
       - name: Build
+        working-directory: wallet-connector/dev/tx-demo
         env:
           DEMO_BASE: /${{ github.event.repository.name }}/tx-demo/
         run: npm run build
 
-      # The artifact's contents become the site ROOT, so the build is staged
-      # under tx-demo/ rather than uploaded directly — that keeps
-      # /yano-wallet/ free for documentation later instead of the demo
-      # occupying it and having to move (a moved URL is a dead link in every
-      # zip's GETTING-STARTED.md already shipped).
+      # The branch contents become the site ROOT, so the build is staged under
+      # tx-demo/ rather than pushed directly — that keeps /yano-wallet/ free for
+      # documentation later instead of the demo occupying it and having to move
+      # (a moved URL is a dead link in every zip's GETTING-STARTED.md already
+      # shipped).
       - name: Stage the site
         run: |
           set -euo pipefail
           site="$GITHUB_WORKSPACE/_site"
           mkdir -p "$site/tx-demo"
-          cp -R dist/. "$site/tx-demo/"
-          # Placeholder so the site root is not a 404 — deploy-pages reports the
-          # root as this run's URL. Replace it when real docs land.
+          cp -R wallet-connector/dev/tx-demo/dist/. "$site/tx-demo/"
+          # Branch-deployed Pages runs Jekyll by default, which would skip files
+          # it considers special. .nojekyll serves the tree verbatim.
+          touch "$site/.nojekyll"
+          # Placeholder so the site root is not a 404. Replace it when real docs land.
           cat > "$site/index.html" <<'HTML'
           <!doctype html><meta charset="utf-8"><title>Yano Wallet</title>
           <meta name="viewport" content="width=device-width,initial-scale=1">
@@ -90,11 +88,24 @@ jobs:
              <a style="color:#93c5fd" href="https://github.com/bloxbean/yano-wallet">Source</a></p>
           </main>
           HTML
-          ls -R "$site" | head -20
+          find "$site" -type f | sed "s#$site#_site#"
 
-      - uses: actions/upload-pages-artifact@v3
-        with:
-          path: _site
-
-      - id: deployment
-        uses: actions/deploy-pages@v4
+      # Plain git rather than a third-party publish action: this is a wallet, and
+      # a deploy step holding a write token is not somewhere to add a dependency
+      # that does not need to be there.
+      #
+      # A fresh orphan commit force-pushed each time, so gh-pages holds the
+      # current site and nothing else — build output must not accumulate history.
+      - name: Publish to gh-pages
+        working-directory: _site
+        run: |
+          set -euo pipefail
+          git init -q
+          git checkout -q -b gh-pages
+          git config user.name  'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add -A
+          git commit -q -m "Deploy ${GITHUB_SHA:0:7} from ${GITHUB_REF_NAME}"
+          git push -f "https://x-access-token:${GITHUB_TOKEN}@github.com/${GITHUB_REPOSITORY}.git" gh-pages
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

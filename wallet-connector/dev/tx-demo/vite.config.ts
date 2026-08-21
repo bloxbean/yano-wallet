@@ -10,6 +10,18 @@ export default defineConfig({
   // workflow; local dev and local builds stay at the root.
   base: process.env.DEMO_BASE || "/",
   plugins: [nodePolyfills()],
+  build: {
+    commonjsOptions: {
+      // Mesh's CBOR dependencies are CommonJS with circular requires. Rollup's
+      // default hoists them, so a circular require can return undefined at the
+      // moment a class needs it as a base — "Class extends value undefined",
+      // thrown while the bundle evaluates, before any of our code runs. Only
+      // production builds are affected: `vite dev` serves modules unbundled, in
+      // the natural order. strictRequires wraps every CJS module in a function
+      // so requires run in the order the code asks for them.
+      strictRequires: true,
+    },
+  },
   server: {
     proxy: {
       // Koios preprod via the dev server (server-to-server) — browser fetches to
