@@ -1,0 +1,245 @@
+name: dev-release
+
+# Manual, internal-testing build. Produces the SAME artifacts as release.yml and
+# native-release.yml but publishes nothing — everything lands as workflow
+# artifacts on this run, so a build can be handed round for testing without
+# cutting a tag or creating a Release.
+#
+#   Actions > dev-release > Run workflow
+#
+# Two independent jobs so a failure in one still yields the other's artifacts —
+# which matters while the native build is young and the JVM installers are what
+# actually ship.
+#
+# Native coverage is 3 platforms, not 4: BellSoft publishes no NIK *Full* for
+# linux-aarch64 (see native-release.yml). linux-arm64 still gets a jpackage build.
+
+on:
+  workflow_dispatch:
+    inputs:
+      build_native:
+        description: 'Build GraalVM-native artifacts'
+        type: boolean
+        default: true
+      build_jvm:
+        description: 'Build JVM artifacts (jpackage installer + portable zip)'
+        type: boolean
+        default: true
+      platforms:
+        description: 'Which platforms to build'
+        type: choice
+        default: all
+        options: [all, macos-arm64, linux-x86_64, windows-x86_64, linux-arm64]
+      upload_from:
+        description: 'Which platform to UPLOAD (others build only, no artifact)'
+        type: choice
+        default: all
+        options: [all, macos-arm64, linux-x86_64, windows-x86_64, linux-arm64, none]
+
+env:
+  NIK_JDK: '25.0.4+10'
+  NIK_VERSION: '25.0.4+1'
+
+jobs:
+  jvm:
+    if: ${{ inputs.build_jvm }}
+    name: JVM (${{ matrix.platform }})
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: macos-15
+            platform: macos-arm64
+          - os: ubuntu-22.04
+            platform: linux-x86_64
+          - os: ubuntu-22.04-arm
+            platform: linux-arm64
+          - os: windows-latest
+            platform: windows-x86_64
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+        if: ${{ inputs.platforms == 'all' || inputs.platforms == matrix.platform }}
+
+      - name: Set up OpenJDK 25 (Temurin — GPLv2+CE, redistributable runtime)
+        if: ${{ inputs.platforms == 'all' || inputs.platforms == matrix.platform }}
+        uses: actions/setup-java@v4
+        with:
+          distribution: 'temurin'
+          java-version: '25'
+
+      - name: Resolve version
+        if: ${{ inputs.platforms == 'all' || inputs.platforms == matrix.platform }}
+        id: ver
+        shell: bash
+        run: |
+          V=$(grep -m1 '^walletVersion' gradle.properties | cut -d= -f2 | tr -d ' ')
+          echo "version=$V-dev-${GITHUB_RUN_NUMBER}" >> "$GITHUB_OUTPUT"
+
+      - name: Install deb tooling (Linux installer)
+        if: ${{ runner.os == 'Linux' && (inputs.platforms == 'all' || inputs.platforms == matrix.platform) }}
+        run: sudo apt-get update && sudo apt-get install -y fakeroot binutils
+
+      - name: Install WiX Toolset (Windows installer)
+        if: ${{ runner.os == 'Windows' && (inputs.platforms == 'all' || inputs.platforms == matrix.platform) }}
+        run: choco install wixtoolset --no-progress
+
+      - name: Grant execute permission for gradlew
+        if: ${{ runner.os != 'Windows' && (inputs.platforms == 'all' || inputs.platforms == matrix.platform) }}
+        run: chmod +x gradlew
+
+      - name: Read pinned Yano node version
+        if: ${{ inputs.platforms == 'all' || inputs.platforms == matrix.platform }}
+        id: node
+        shell: bash
+        run: echo "version=$(grep -m1 '^yanoVersion' gradle.properties | cut -d= -f2 | tr -d ' ')" >> "$GITHUB_OUTPUT"
+
+      - name: Cache Yano node distribution
+        if: ${{ inputs.platforms == 'all' || inputs.platforms == matrix.platform }}
+        uses: actions/cache@v4
+        with:
+          path: ~/.gradle/yano-dist
+          key: yano-dist-${{ steps.node.outputs.version }}
+
+      # Separate invocation — see the comment in release.yml.
+      - name: Fetch pinned Yano node distribution
+        if: ${{ inputs.platforms == 'all' || inputs.platforms == matrix.platform }}
+        shell: bash
+        run: ./gradlew fetchYanoNode --no-daemon
+
+      - name: Build installer + portable zip
+        if: ${{ inputs.platforms == 'all' || inputs.platforms == matrix.platform }}
+        shell: bash
+        run: ./gradlew :wallet-app:jpackageInstaller :wallet-app:walletZip --no-daemon
+
+      # A full run is ~4-5 GB, free only while this repo is public. If it ever
+      # goes private, set upload_from to one platform.
+      - name: Upload artifacts
+        if: ${{ (inputs.platforms == 'all' || inputs.platforms == matrix.platform) && (inputs.upload_from == 'all' || inputs.upload_from == matrix.platform) }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: dev-jvm-${{ steps.ver.outputs.version }}-${{ matrix.platform }}
+          path: |
+            wallet-app/build/dist/*.dmg
+            wallet-app/build/dist/*.msi
+            wallet-app/build/dist/*.deb
+            wallet-app/build/dist/*.zip
+          if-no-files-found: error
+          # Throwaway test builds — re-run the workflow for a fresh copy.
+          retention-days: 5
+
+  native:
+    if: ${{ inputs.build_native }}
+    name: Native (${{ matrix.platform }})
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: macos-15
+            platform: macos-arm64
+            nik_os: macos-aarch64
+            nik_ext: tar.gz
+          - os: ubuntu-22.04
+            platform: linux-x86_64
+            nik_os: linux-amd64
+            nik_ext: tar.gz
+          - os: windows-latest
+            platform: windows-x86_64
+            nik_os: windows-amd64
+            nik_ext: zip
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+        if: ${{ inputs.platforms == 'all' || inputs.platforms == matrix.platform }}
+
+      - name: Resolve version
+        if: ${{ inputs.platforms == 'all' || inputs.platforms == matrix.platform }}
+        id: ver
+        shell: bash
+        run: |
+          V=$(grep -m1 '^walletVersion' gradle.properties | cut -d= -f2 | tr -d ' ')
+          echo "version=$V-dev-${GITHUB_RUN_NUMBER}" >> "$GITHUB_OUTPUT"
+
+      - name: Cache Liberica NIK Full
+        if: ${{ inputs.platforms == 'all' || inputs.platforms == matrix.platform }}
+        id: nikcache
+        uses: actions/cache@v4
+        with:
+          path: ${{ runner.temp }}/nik
+          key: nik-full-${{ env.NIK_JDK }}-${{ env.NIK_VERSION }}-${{ matrix.nik_os }}
+
+      - name: Download Liberica NIK Full
+        if: ${{ steps.nikcache.outputs.cache-hit != 'true' && (inputs.platforms == 'all' || inputs.platforms == matrix.platform) }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          base="https://download.bell-sw.com/vm/${NIK_VERSION%%+*}"
+          file="bellsoft-liberica-vm-full-openjdk${NIK_JDK}-${NIK_VERSION}-${{ matrix.nik_os }}.${{ matrix.nik_ext }}"
+          mkdir -p "${{ runner.temp }}/nik"
+          curl -fSL --retry 3 -o "${{ runner.temp }}/nik.${{ matrix.nik_ext }}" "$base/$file"
+          if [ "${{ matrix.nik_ext }}" = "zip" ]; then
+            unzip -q "${{ runner.temp }}/nik.zip" -d "${{ runner.temp }}/nik"
+          else
+            tar xzf "${{ runner.temp }}/nik.tar.gz" -C "${{ runner.temp }}/nik"
+          fi
+
+      - name: Locate NIK_HOME
+        if: ${{ inputs.platforms == 'all' || inputs.platforms == matrix.platform }}
+        id: nik
+        shell: bash
+        run: |
+          set -euo pipefail
+          root=$(find "${{ runner.temp }}/nik" -maxdepth 1 -mindepth 1 -type d | head -1)
+          if [ -d "$root/Contents/Home" ]; then root="$root/Contents/Home"; fi
+          echo "home=$root" >> "$GITHUB_OUTPUT"
+
+      - name: Grant execute permission for gradlew
+        if: ${{ runner.os != 'Windows' && (inputs.platforms == 'all' || inputs.platforms == matrix.platform) }}
+        run: chmod +x gradlew
+
+      - name: Read pinned Yano node version
+        if: ${{ inputs.platforms == 'all' || inputs.platforms == matrix.platform }}
+        id: node
+        shell: bash
+        run: echo "version=$(grep -m1 '^yanoVersion' gradle.properties | cut -d= -f2 | tr -d ' ')" >> "$GITHUB_OUTPUT"
+
+      - name: Cache Yano node distribution (native)
+        if: ${{ inputs.platforms == 'all' || inputs.platforms == matrix.platform }}
+        uses: actions/cache@v4
+        with:
+          path: ~/.gradle/yano-dist
+          key: yano-dist-native-${{ steps.node.outputs.version }}-${{ matrix.platform }}
+
+      - name: Fetch pinned Yano node distribution (native)
+        if: ${{ inputs.platforms == 'all' || inputs.platforms == matrix.platform }}
+        shell: bash
+        run: ./gradlew fetchYanoNode -PyanoNative --no-daemon
+
+      - name: Build native wallet + zip
+        if: ${{ inputs.platforms == 'all' || inputs.platforms == matrix.platform }}
+        shell: bash
+        env:
+          NIK_HOME: ${{ steps.nik.outputs.home }}
+        run: ./gradlew :wallet-app:nativeZip -PyanoNative --no-daemon
+
+      # See native-release.yml: a native image that builds can still be broken at
+      # runtime, so start it before anyone downloads it.
+      - name: Smoke test the native binary
+        if: ${{ inputs.platforms == 'all' || inputs.platforms == matrix.platform }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          bin=$(find wallet-app/build/native -maxdepth 1 -name 'yano-wallet*' -type f | head -1)
+          "$bin" --hid-probe || true
+          echo "native binary is runnable"
+
+      # A full run is ~4-5 GB, free only while this repo is public. If it ever
+      # goes private, set upload_from to one platform.
+      - name: Upload artifacts
+        if: ${{ (inputs.platforms == 'all' || inputs.platforms == matrix.platform) && (inputs.upload_from == 'all' || inputs.upload_from == matrix.platform) }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: dev-native-${{ steps.ver.outputs.version }}-${{ matrix.platform }}
+          path: wallet-app/build/dist/yano-wallet-native-*.zip
+          if-no-files-found: error
+          retention-days: 5

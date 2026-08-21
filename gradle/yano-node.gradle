@@ -22,19 +22,61 @@
 // So local dev and offline builds never hit the network, and CI downloads once
 // per version bump (cache the directory keyed on yanoVersion).
 
-def yanoVersion = project.findProperty('yanoVersion') ?: '0.1.0-pre12'
+def yanoVersion = project.findProperty('yanoVersion') ?: '0.1.0-pre13'
 def cacheRoot = new File(gradle.gradleUserHomeDir, "yano-dist")
-def distDir = new File(cacheRoot, "yano-${yanoVersion}")
-def zipName = "yano-${yanoVersion}.zip"
+
+// -PyanoNative selects the platform-specific native distribution instead of the
+// JVM one (ADR-044). The native node is a single executable rather than a jar,
+// so the artifact name, the cache directory and the marker file all change —
+// but the layout inside is identical (config/network/<network>/ beside the
+// binary), which is why NodeLocator.workingDirFor needs no change.
+ext.yanoNativeRequested = project.hasProperty('yanoNative')
+
+// Yano publishes exactly the four platforms this project releases on; there is
+// deliberately no macOS-x64 entry because we do not build for it either.
+ext.yanoNativePlatform = { ->
+    def os = System.getProperty('os.name').toLowerCase()
+    def arch = System.getProperty('os.arch').toLowerCase()
+    def aarch64 = arch.contains('aarch64') || arch.contains('arm64')
+    if (os.contains('mac') || os.contains('darwin')) {
+        if (!aarch64) {
+            throw new GradleException("Yano publishes no native build for macOS x86_64. "
+                    + "Use the JVM distribution (drop -PyanoNative) on Intel Macs.")
+        }
+        return 'macos-arm64'
+    }
+    if (os.contains('windows')) return 'windows-x64'
+    if (os.contains('linux')) return aarch64 ? 'linux-arm64' : 'linux-x64'
+    throw new GradleException("No Yano native distribution for os=${os} arch=${arch}")
+}
+
+def nativePlatform = yanoNativeRequested ? yanoNativePlatform() : null
+def distName = yanoNativeRequested
+        ? "yano-native-${yanoVersion}-${nativePlatform}"
+        : "yano-${yanoVersion}"
+def distDir = new File(cacheRoot, distName)
+def zipName = "${distName}.zip"
 def downloadUrl = "https://github.com/bloxbean/yano/releases/download/v${yanoVersion}/${zipName}"
+
+/** The file that marks a usable distribution: a jar, or the native executable. */
+ext.yanoNodeMarker = { File dir ->
+    if (yanoNativeRequested) {
+        def exe = new File(dir, System.getProperty('os.name').toLowerCase().contains('windows')
+                ? 'yano.exe' : 'yano')
+        return exe
+    }
+    return new File(dir, 'yano.jar')
+}
 
 // Pinned checksums: version -> sha256 of the release zip. Yano's releases do not
 // publish .sha256 assets yet, so we record the hash when pinning a version.
 // Populate with: ./gradlew yanoNodeChecksum -PyanoVersion=<version>
 def checksumFile = file("$rootDir/gradle/yano-node.lock")
-def expectedSha = { String version ->
+// Keyed by ARTIFACT, not by version: the native builds are one zip per platform,
+// so a single per-version checksum cannot cover them.
+def expectedSha = { String artifact ->
     if (!checksumFile.exists()) return null
-    def line = checksumFile.readLines().find { it.trim().startsWith("${version}=") }
+    def line = checksumFile.readLines().find { it.trim().startsWith("${artifact}=") }
     return line ? line.split('=', 2)[1].trim() : null
 }
 
@@ -52,7 +94,7 @@ ext.resolveYanoDist = { boolean required ->
     // locally built node, and putting one there is an explicit "use this". Needs
     // yano.jar AND config/ (genesis lives in config/network/<network>/).
     def local = new File(rootDir, '.yano-node')
-    if (new File(local, 'yano.jar').isFile() && new File(local, 'config').isDirectory()) {
+    if (yanoNodeMarker(local).isFile() && new File(local, 'config').isDirectory()) {
         return local
     }
     if (distDir.isDirectory()) {
@@ -90,10 +132,10 @@ tasks.register('fetchYanoNode') {
 
         def actual = java.security.MessageDigest.getInstance('SHA-256')
                 .digest(zip.bytes).encodeHex().toString()
-        def expected = expectedSha(yanoVersion.toString())
+        def expected = expectedSha(distName.toString())
         if (expected == null) {
-            logger.warn("No pinned checksum for Yano ${yanoVersion}. Record it in "
-                    + "gradle/yano-node.lock:\n    ${yanoVersion}=${actual}")
+            logger.warn("No pinned checksum for ${distName}. Record it in "
+                    + "gradle/yano-node.lock:\n    ${distName}=${actual}")
         } else if (expected != actual) {
             zip.delete()
             throw new GradleException("Checksum mismatch for ${zipName}\n"
@@ -113,6 +155,15 @@ tasks.register('fetchYanoNode') {
         project.delete(distDir)
         unpacked.renameTo(distDir)
         project.delete(staging)
+        if (yanoNativeRequested) {
+            // Gradle's zipTree does not preserve the POSIX executable bit, so the
+            // unpacked binary would be non-executable and ManagedNode's spawn()
+            // would fail with a permission error rather than anything diagnostic.
+            def exe = yanoNodeMarker(distDir)
+            if (exe.isFile()) {
+                exe.setExecutable(true, false)
+            }
+        }
         logger.lifecycle("Yano node ${yanoVersion} ready at ${distDir}")
     }
 }
@@ -127,7 +178,7 @@ tasks.register('yanoNodeChecksum') {
         }
         def sha = java.security.MessageDigest.getInstance('SHA-256')
                 .digest(zip.bytes).encodeHex().toString()
-        println "${yanoVersion}=${sha}"
+        println "${distName}=${sha}"
     }
 }
 
@@ -139,7 +190,8 @@ tasks.register('yanoNodeInfo') {
         println "pinned version : ${yanoVersion}"
         println "resolved dist  : ${dir ?: '(not available — run ./gradlew fetchYanoNode)'}"
         if (dir) {
-            println "node jar       : ${new File(dir, 'yano.jar').exists() ? 'yes' : 'MISSING'}"
+            println "flavour       : ${yanoNativeRequested ? "native (" + nativePlatform + ")" : 'jvm (jar)'}"
+            println "node artifact : ${yanoNodeMarker(dir).exists() ? 'yes' : 'MISSING'}"
             println "config/        : ${new File(dir, 'config').isDirectory() ? 'yes' : 'MISSING'}"
         }
     }

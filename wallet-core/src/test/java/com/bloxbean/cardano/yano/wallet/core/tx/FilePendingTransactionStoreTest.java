@@ -36,7 +36,7 @@ class FilePendingTransactionStoreTest {
                 .markPending(1_000L);
 
         store.save(pending);
-        store.save(pending.markConfirmed(12_345L, 99L, "c".repeat(64)));
+        store.save(pending.markConfirmed(12_345L, 99L, "c".repeat(64), 1_700_000_000L));
 
         assertThat(store.list()).hasSize(1);
         PendingTransaction confirmed = store.find(pending.txHash()).orElseThrow();
@@ -68,7 +68,7 @@ class FilePendingTransactionStoreTest {
 
         assertThat(pending.isExpiredAt(12_000L)).isFalse();
         assertThat(pending.isExpiredAt(12_001L)).isTrue();
-        assertThat(pending.markConfirmed(11_999L, 1L, "1".repeat(64)).isExpiredAt(12_001L)).isFalse();
+        assertThat(pending.markConfirmed(11_999L, 1L, "1".repeat(64), 1_700_000_000L).isExpiredAt(12_001L)).isFalse();
     }
 
     private QuickAdaTxDraft draft(String txHash) {

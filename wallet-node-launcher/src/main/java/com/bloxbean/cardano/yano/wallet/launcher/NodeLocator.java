@@ -39,8 +39,9 @@ public final class NodeLocator {
     public static Optional<NodeLaunchSpec> autoDetectDevJar(WalletNetwork network, Path chainstateDir,
                                                             Path logFile, int httpPort, int n2nPort,
                                                             List<UpstreamRelay> relays) {
-        return findNodeJar().map(jar -> new NodeLaunchSpec(network, jar, false, workingDirFor(jar),
-                httpPort, n2nPort, chainstateDir, logFile, resolveJavaExecutable(), relays));
+        return findNodeJar().map(jar -> new NodeLaunchSpec(network, jar, isNativeBinary(jar),
+                workingDirFor(jar), httpPort, n2nPort, chainstateDir, logFile,
+                resolveJavaExecutable(), relays));
     }
 
     /**
@@ -77,6 +78,16 @@ public final class NodeLocator {
             Path path = Paths.get(override);
             return Files.isRegularFile(path) ? Optional.of(path.toAbsolutePath().normalize()) : Optional.empty();
         }
+        // Beside the running executable first. A distributed native build ships
+        // `yano-node/` next to the binary, and the user may launch it directly
+        // rather than through yano-wallet.sh — in which case yano.node.jar is
+        // unset and a cwd-relative search finds nothing, which is exactly the
+        // "Could not find a Yano node to run" failure.
+        Optional<Path> beside = besideExecutable();
+        if (beside.isPresent()) {
+            return beside;
+        }
+
         Path dir = Paths.get("").toAbsolutePath();
         for (int depth = 0; depth < 6 && dir != null; depth++) {
             // A distribution fetched by the build (gradle/yano-node.gradle links
@@ -94,24 +105,69 @@ public final class NodeLocator {
         return Optional.empty();
     }
 
-    /** {@code <dir>/yano.jar}, or the same inside a single nested dist directory. */
+    /**
+     * A node distribution shipped alongside the running executable — {@code
+     * yano-node/} (the layout of the native zip) or {@code .yano-node/}.
+     *
+     * <p>Resolved from the process's own command rather than the working
+     * directory, so it holds however the binary was launched: double-clicked,
+     * from another directory, or through a symlink on PATH.
+     */
+    private static Optional<Path> besideExecutable() {
+        return ProcessHandle.current().info().command()
+                .map(Paths::get)
+                .map(Path::toAbsolutePath)
+                .map(Path::getParent)
+                .flatMap(dir -> {
+                    Optional<Path> shipped = firstJarIn(dir.resolve("yano-node"));
+                    return shipped.isPresent() ? shipped : firstJarIn(dir.resolve(".yano-node"));
+                });
+    }
+
+    /**
+     * True when the resolved artifact is a native executable rather than a jar.
+     *
+     * <p>Decided by name, because that is the one thing both distributions agree
+     * on: the JVM distribution ships {@code yano.jar}, the native one a bare
+     * {@code yano} (or {@code yano.exe}). {@code ManagedNode} needs this to choose
+     * between running the file directly and handing it to {@code java -jar}.
+     */
+    static boolean isNativeBinary(Path artifact) {
+        return !artifact.getFileName().toString().endsWith(".jar");
+    }
+
+    /** Node artifacts to look for, in order: the jar first, then the native binary. */
+    private static final List<String> NODE_ARTIFACTS = List.of("yano.jar", "yano", "yano.exe");
+
+    /**
+     * A node artifact directly in {@code dir}, or inside a single nested dist
+     * directory (the shape both release zips unpack to). The jar is tried first,
+     * so a directory holding both keeps the behaviour it had before native
+     * support existed.
+     */
     private static Optional<Path> firstJarIn(Path dir) {
         if (!Files.isDirectory(dir)) {
             return Optional.empty();
         }
-        Path direct = dir.resolve("yano.jar");
-        if (Files.isRegularFile(direct)) {
-            return Optional.of(direct.toAbsolutePath().normalize());
+        for (String name : NODE_ARTIFACTS) {
+            Path direct = dir.resolve(name);
+            if (Files.isRegularFile(direct)) {
+                return Optional.of(direct.toAbsolutePath().normalize());
+            }
         }
-        try (var entries = Files.list(dir)) {
-            return entries.filter(Files::isDirectory)
-                    .map(child -> child.resolve("yano.jar"))
-                    .filter(Files::isRegularFile)
-                    .findFirst()
-                    .map(path -> path.toAbsolutePath().normalize());
+        try (var stream = Files.list(dir)) {
+            for (Path child : stream.filter(Files::isDirectory).toList()) {
+                for (String name : NODE_ARTIFACTS) {
+                    Path candidate = child.resolve(name);
+                    if (Files.isRegularFile(candidate)) {
+                        return Optional.of(candidate.toAbsolutePath().normalize());
+                    }
+                }
+            }
         } catch (java.io.IOException e) {
             return Optional.empty();
         }
+        return Optional.empty();
     }
 
     static String resolveJavaExecutable() {

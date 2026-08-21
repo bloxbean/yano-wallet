@@ -33,4 +33,22 @@ public interface HistoryPort {
             super(message);
         }
     }
+
+    /**
+     * The backend serves no transaction index at all — not "the call failed",
+     * but "there is nothing here to call". No published Yano release exposes an
+     * account- or address-level transaction route, so this is the normal answer
+     * against a managed node.
+     *
+     * <p>Kept separate from its parent on purpose. A caller must be able to tell
+     * a permanent absence, which it can work around by falling back to the
+     * wallet's own record of what it submitted (ADR-043), from a node that was
+     * merely unreachable or unhealthy for a moment — where showing a partial
+     * local list instead of the real history would quietly hide transactions.
+     */
+    class HistoryNotSupportedException extends HistoryUnavailableException {
+        public HistoryNotSupportedException(String message) {
+            super(message);
+        }
+    }
 }

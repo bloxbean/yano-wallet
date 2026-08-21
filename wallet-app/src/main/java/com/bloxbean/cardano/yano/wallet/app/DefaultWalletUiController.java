@@ -764,7 +764,7 @@ public class DefaultWalletUiController implements WalletUiController {
             } else {
                 try {
                     var socketServer = new com.bloxbean.cardano.yano.wallet.connector.Cip30LocalSocketServer(
-                            new NativeMessagingInstaller().socketPath(), wallet, approvals);
+                            new NativeMessagingInstaller(backendManager.dataDir()).socketPath(), wallet, approvals);
                     socketServer.start();
                     connectorSocketServer = socketServer;
                 } catch (Exception e) {
@@ -909,7 +909,7 @@ public class DefaultWalletUiController implements WalletUiController {
     public CompletableFuture<String> installNativeMessagingHost() {
         return async(() -> {
             try {
-                return new NativeMessagingInstaller().install();
+                return new NativeMessagingInstaller(backendManager.dataDir()).install();
             } catch (java.io.IOException e) {
                 throw new IllegalStateException(e.getMessage(), e);
             }
@@ -960,7 +960,7 @@ public class DefaultWalletUiController implements WalletUiController {
     }
 
     @Override
-    public CompletableFuture<List<TxItem>> history(int page, int count) {
+    public CompletableFuture<HistoryPage> history(int page, int count) {
         return async(() -> {
             WalletService.Session active = requireSession();
             StoredWallet profile = active.profile();
@@ -971,12 +971,22 @@ public class DefaultWalletUiController implements WalletUiController {
             // wins over a stale local pending record of the same hash.
             List<Dated> dated = new ArrayList<>();
             Set<String> nodeHashes = new LinkedHashSet<>();
-            for (HistoryPort.TxRef tx : ports().walletTransactions(
-                    profile.stakeAddress(), profile.baseAddress(), page, count, true)) {
-                nodeHashes.add(tx.txHash());
-                dated.add(new Dated(tx.blockTime(), new TxItem(tx.txHash(), tx.blockHeight(),
-                        TIME_FORMAT.format(Instant.ofEpochSecond(tx.blockTime())),
-                        "confirmed", null, null, explorerUrl(network, tx.txHash()))));
+            try {
+                for (HistoryPort.TxRef tx : ports().walletTransactions(
+                        profile.stakeAddress(), profile.baseAddress(), page, count, true)) {
+                    nodeHashes.add(tx.txHash());
+                    dated.add(new Dated(tx.blockTime(), new TxItem(tx.txHash(), tx.blockHeight(),
+                            TIME_FORMAT.format(Instant.ofEpochSecond(tx.blockTime())),
+                            "confirmed", null, null, explorerUrl(network, tx.txHash()))));
+                }
+            } catch (HistoryPort.HistoryNotSupportedException e) {
+                // This backend indexes no transactions, so there is no history to
+                // merge with — the wallet's own record is the whole list.
+                // Deliberately NOT caught for the broader HistoryUnavailable: a
+                // node that hiccuped still has real history, and answering with a
+                // partial local list would hide transactions rather than report a
+                // problem the user can act on.
+                return localHistory(profile, network, page, count);
             }
 
             List<TxItem> items = new ArrayList<>();
@@ -1020,8 +1030,56 @@ public class DefaultWalletUiController implements WalletUiController {
             // Newest first, mixing timed-out local records into the confirmed list.
             dated.sort(java.util.Comparator.comparingLong(Dated::epochSeconds).reversed());
             dated.forEach(entry -> items.add(entry.item()));
-            return items;
+            return new HistoryPage(items, false);
         });
+    }
+
+    /**
+     * History assembled from the wallet's own record of what it submitted, for
+     * backends that serve no transaction index (ADR-043).
+     *
+     * <p>Covers everything signed through this wallet, including transactions a
+     * connected dApp submitted through the CIP-30 bridge. It cannot cover funds
+     * that arrived from elsewhere — those are in the balance but not in this
+     * list — which is why the page is flagged and the screens label it.
+     */
+    private HistoryPage localHistory(StoredWallet profile, WalletNetwork network, int page, int count) {
+        List<Dated> dated = new ArrayList<>();
+        for (PendingTransaction record : service().localHistory(
+                profile.id(), profile.networkId(), System.currentTimeMillis())) {
+            long blockTime = record.confirmedBlockTimeEpochSeconds() == null
+                    ? 0L : record.confirmedBlockTimeEpochSeconds();
+            // Sort by when it landed, falling back to when it was sent. A record
+            // still in flight was submitted just now, so it sorts to the top on
+            // its own — no separate pinning needed as in the merged path.
+            long when = blockTime > 0 ? blockTime : record.createdAtEpochMillis() / 1000L;
+            dated.add(new Dated(when, new TxItem(
+                    record.txHash(),
+                    record.confirmedBlock() == null ? 0L : record.confirmedBlock(),
+                    TIME_FORMAT.format(Instant.ofEpochSecond(when)),
+                    localStatus(record),
+                    "₳ " + ada(record.lovelace()),
+                    "sent",
+                    explorerUrl(network, record.txHash()))));
+        }
+        dated.sort(java.util.Comparator.comparingLong(Dated::epochSeconds).reversed());
+
+        // Paged in memory: this list only ever holds what this wallet sent, so it
+        // is small, and the store has no paging of its own.
+        int from = Math.min(Math.max(page - 1, 0) * count, dated.size());
+        int to = Math.min(from + count, dated.size());
+        return new HistoryPage(dated.subList(from, to).stream().map(Dated::item).toList(), true);
+    }
+
+    /** The status word a local record shows, matching the merged path's vocabulary. */
+    private static String localStatus(PendingTransaction record) {
+        return switch (record.status()) {
+            case CONFIRMED -> "confirmed";
+            case FAILED -> "failed";
+            case EXPIRED -> "expired";
+            case ROLLED_BACK -> "rolled_back";
+            default -> "pending";
+        };
     }
 
     /** A history row with the timestamp it should sort by (block time, or submission time). */

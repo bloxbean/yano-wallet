@@ -28,18 +28,18 @@ class NativeMessagingInstallerTest {
 
     @Test
     void installsProxyScriptAndBrowserManifest() throws Exception {
-        NativeMessagingInstaller installer = new NativeMessagingInstaller(tempHome.resolve(".yano"));
+        NativeMessagingInstaller installer = new NativeMessagingInstaller(tempHome.resolve(".yano-wallet"), tempHome);
 
         String summary = installer.install();
         assertThat(summary).contains("Restart the browser");
 
         // The proxy jar is real (extracted from the app's resources).
-        Path proxyJar = tempHome.resolve(".yano/cip30-proxy.jar");
+        Path proxyJar = tempHome.resolve(".yano-wallet/connector/cip30-proxy.jar");
         assertThat(proxyJar).exists();
         assertThat(Files.size(proxyJar)).isGreaterThan(1000);
 
         // The launcher is executable and wires java + jar + socket together.
-        Path script = tempHome.resolve(".yano/cip30-host.sh");
+        Path script = tempHome.resolve(".yano-wallet/connector/cip30-host.sh");
         assertThat(Files.getPosixFilePermissions(script)).contains(PosixFilePermission.OWNER_EXECUTE);
         String launcher = Files.readString(script);
         assertThat(launcher).contains(System.getProperty("java.home"));
@@ -64,10 +64,10 @@ class NativeMessagingInstallerTest {
 
     @Test
     void reinstallIsIdempotent() throws Exception {
-        NativeMessagingInstaller installer = new NativeMessagingInstaller(tempHome.resolve(".yano"));
+        NativeMessagingInstaller installer = new NativeMessagingInstaller(tempHome.resolve(".yano-wallet"), tempHome);
         installer.install();
         installer.install(); // must overwrite, not fail
 
-        assertThat(tempHome.resolve(".yano/cip30-proxy.jar")).exists();
+        assertThat(tempHome.resolve(".yano-wallet/connector/cip30-proxy.jar")).exists();
     }
 }

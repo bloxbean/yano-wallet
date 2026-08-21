@@ -8,8 +8,12 @@ name: release
 # Plus one OS-independent artifact built once, in its own job:
 #   * the browser extension zip (CIP-30 connector) — unzip, then Load unpacked
 #
-#   preview : Actions > Run workflow      -> uploads as workflow ARTIFACTS
-#   release : push a tag  v<version>      -> uploads to the RELEASE for that tag
+#   release : push a tag v<version>  -> attaches the files to that tag's RELEASE
+#   dry run : Actions > Run workflow -> builds everything, publishes nothing
+#
+# No upload-artifact on purpose: on a tag the Release assets already are the
+# download, so an artifact is just a second copy of a multi-hundred-MB zip.
+# Use dev-release.yml when you want the files without cutting a Release.
 #
 # Only tagged pushes land on a Release; everyday pushes and pull requests are
 # built by build.yml, which skips packaging entirely so it stays fast.
@@ -127,20 +131,6 @@ jobs:
           done
           ls -la
 
-      - name: Upload workflow artifacts (preview + release)
-        uses: actions/upload-artifact@v4
-        with:
-          name: yano-wallet-${{ steps.ver.outputs.version }}-${{ matrix.platform }}
-          path: |
-            wallet-app/build/dist/*.dmg
-            wallet-app/build/dist/*.pkg
-            wallet-app/build/dist/*.msi
-            wallet-app/build/dist/*.exe
-            wallet-app/build/dist/*.deb
-            wallet-app/build/dist/*.rpm
-            wallet-app/build/dist/*-portable.zip
-          if-no-files-found: error
-
       - name: Attach to the GitHub Release (tag builds only)
         if: startsWith(github.ref, 'refs/tags/')
         uses: softprops/action-gh-release@v2
@@ -180,13 +170,6 @@ jobs:
 
       - name: Package browser connector
         run: ./gradlew connectorZip --no-daemon
-
-      - name: Upload workflow artifact (preview + release)
-        uses: actions/upload-artifact@v4
-        with:
-          name: yano-connector
-          path: build/dist/yano-connector-*.zip
-          if-no-files-found: error
 
       - name: Attach to the GitHub Release (tag builds only)
         if: startsWith(github.ref, 'refs/tags/')

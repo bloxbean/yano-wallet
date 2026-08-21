@@ -319,7 +319,7 @@ public interface WalletUiController {
 
     CompletableFuture<List<AddressItem>> addresses(int count);
 
-    CompletableFuture<List<TxItem>> history(int page, int count);
+    CompletableFuture<HistoryPage> history(int page, int count);
 
     CompletableFuture<List<RewardItem>> rewards(int page, int count);
 
@@ -472,6 +472,22 @@ public interface WalletUiController {
 
     record TxItem(String txHash, long blockHeight, String timeText, String status,
                   String amountText, String direction, String explorerUrl) {
+    }
+
+    /**
+     * One page of history, and where it came from.
+     *
+     * <p>{@code localOnly} means the backend serves no transaction index, so the
+     * list is the wallet's own record of what it sent rather than chain history
+     * (ADR-043). Screens must say so: the difference is not cosmetic, because a
+     * local-only list cannot show funds that arrived from elsewhere, and a user
+     * comparing it against their balance would otherwise conclude the wallet had
+     * lost a transaction.
+     */
+    record HistoryPage(List<TxItem> items, boolean localOnly) {
+        public HistoryPage {
+            items = items == null ? List.of() : List.copyOf(items);
+        }
     }
 
     record RewardItem(int epoch, String amountAda, String poolId, String type) {

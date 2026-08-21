@@ -112,8 +112,17 @@ public class DashboardScreen implements Shell.Screen {
             }
         });
 
-        Ui.onFx(controller.history(1, 5), txs -> {
+        Ui.onFx(controller.history(1, 5), history -> {
             activityBox.getChildren().clear();
+            if (history.localOnly()) {
+                // Said here as well as on History, because this card is where a
+                // user checks whether a payment arrived — and a local-only list
+                // cannot show one that did. Balance is unaffected either way.
+                Label localChip = Ui.chip("Local history only", "chip-warn");
+                Label explain = Ui.muted("sent from this wallet; received funds are not listed");
+                activityBox.getChildren().add(Ui.row(8, localChip, explain));
+            }
+            var txs = history.items();
             if (txs.isEmpty()) {
                 activityBox.getChildren().add(Ui.muted("No transactions yet"));
             } else {

@@ -8,6 +8,7 @@ import java.nio.file.StandardCopyOption;
 import java.nio.file.attribute.PosixFilePermission;
 import java.util.ArrayList;
 import java.util.List;
+import java.util.Optional;
 import java.util.Locale;
 import java.util.Set;
 
@@ -30,13 +31,42 @@ final class NativeMessagingInstaller {
     static final String EXTENSION_ID = "bjnkcmbkjaebecgllkgbeapbjcknnedn";
 
     private final Path yanoDir;
+    /**
+     * Where the browser keeps its NativeMessagingHosts directories — the real
+     * user home, NOT anything derived from the data directory.
+     *
+     * <p>Kept separate deliberately. Connector files follow {@code --data-dir},
+     * but browser registration is machine-level: one manifest per browser,
+     * whatever data directory installed it. Deriving this from the connector
+     * path (as this once did, via {@code yanoDir.getParent()}) silently wrote
+     * manifests to {@code <dataDir>/Library/Application Support/...} once the
+     * connector moved out of {@code ~/.yano}.
+     */
+    private final Path browserHome;
 
     NativeMessagingInstaller() {
-        this(Path.of(System.getProperty("user.home"), ".yano"));
+        this(Path.of(System.getProperty("user.home"), ".yano-wallet"));
     }
 
-    NativeMessagingInstaller(Path yanoDir) {
-        this.yanoDir = yanoDir;
+    /**
+     * @param dataDir the wallet's data directory (default {@code ~/.yano-wallet},
+     *                or whatever {@code --data-dir} selected). Connector files
+     *                live under {@code <dataDir>/connector}.
+     *
+     * <p>These used to sit in a hardcoded {@code ~/.yano}, which meant
+     * {@code --data-dir} did not isolate them: two wallets with separate data
+     * directories contended for one socket, and a dApp reached whichever bound
+     * it rather than the instance the user was looking at. It also squatted the
+     * obvious directory name for the Yano <em>node</em>.
+     */
+    NativeMessagingInstaller(Path dataDir) {
+        this(dataDir, Path.of(System.getProperty("user.home")));
+    }
+
+    /** @param browserHome overridden by tests; production always uses the real home. */
+    NativeMessagingInstaller(Path dataDir, Path browserHome) {
+        this.yanoDir = dataDir.resolve("connector");
+        this.browserHome = browserHome;
     }
 
     /** Where the wallet's native-messaging socket lives — shared with the server. */
@@ -73,6 +103,11 @@ final class NativeMessagingInstaller {
         Path target = yanoDir.resolve("cip30-proxy.jar");
         try (InputStream in = NativeMessagingInstaller.class.getResourceAsStream("/native-host/cip30-proxy.jar")) {
             if (in == null) {
+                // A native build does not need it: the wallet binary hosts the
+                // relay itself. Only a JVM build genuinely requires the jar.
+                if (nativeImageBinary().isPresent()) {
+                    return target;
+                }
                 throw new IOException("Bundled proxy jar missing from the app build");
             }
             Files.copy(in, target, StandardCopyOption.REPLACE_EXISTING);
@@ -81,9 +116,48 @@ final class NativeMessagingInstaller {
     }
 
     private Path writeLauncherScript(Path proxyJar) throws IOException {
-        Path java = Path.of(System.getProperty("java.home"), "bin", "java");
         Path script = yanoDir.resolve("cip30-host.sh");
-        String content = """
+        String content = nativeImageBinary()
+                .map(this::nativeLauncher)
+                .orElseGet(() -> jvmLauncher(proxyJar));
+        Files.writeString(script, content);
+        Files.setPosixFilePermissions(script, Set.of(
+                PosixFilePermission.OWNER_READ, PosixFilePermission.OWNER_WRITE, PosixFilePermission.OWNER_EXECUTE));
+        return script;
+    }
+
+    /**
+     * The wallet's own executable when running as a GraalVM native image, else
+     * empty.
+     *
+     * <p>{@code java.home} is null in a native image, which is how this used to
+     * fail: {@code Path.of(null, "bin", "java")} threw an NPE that surfaced as
+     * "Install failed: null". More fundamentally there is no JVM to run the
+     * bundled proxy jar with, so the native build hosts the relay itself via
+     * {@code --cip30-proxy}.
+     */
+    private static Optional<Path> nativeImageBinary() {
+        if (System.getProperty("java.home") != null) {
+            return Optional.empty();   // ordinary JVM run — use the bundled jar
+        }
+        return ProcessHandle.current().info().command().map(Path::of);
+    }
+
+    private String nativeLauncher(Path walletBinary) {
+        return """
+                #!/bin/sh
+                # Yano CIP-30 Native Messaging host — written by the Yano wallet.
+                # Chrome launches this per dApp connection; it relays stdio to the
+                # wallet's local socket. This is the NATIVE build, so the wallet
+                # binary hosts the relay itself — there is no JVM to run a jar with.
+                # Re-run 'Install browser connector' after moving or updating the app.
+                exec "%s" --cip30-proxy="%s" "$@"
+                """.formatted(walletBinary, socketPath());
+    }
+
+    private String jvmLauncher(Path proxyJar) {
+        Path java = Path.of(System.getProperty("java.home"), "bin", "java");
+        return """
                 #!/bin/sh
                 # Yano CIP-30 Native Messaging host — written by the Yano wallet.
                 # Chrome launches this per dApp connection; it relays stdio to the
@@ -91,10 +165,6 @@ final class NativeMessagingInstaller {
                 # wallet's Settings after moving or updating the app.
                 exec "%s" -cp "%s" com.bloxbean.cardano.yano.wallet.connector.proxy.Cip30NativeProxy "%s" "$@"
                 """.formatted(java, proxyJar, socketPath());
-        Files.writeString(script, content);
-        Files.setPosixFilePermissions(script, Set.of(
-                PosixFilePermission.OWNER_READ, PosixFilePermission.OWNER_WRITE, PosixFilePermission.OWNER_EXECUTE));
-        return script;
     }
 
     private List<Path> writeBrowserManifests(Path script) throws IOException {
@@ -127,7 +197,7 @@ final class NativeMessagingInstaller {
 
     private List<Path> browserHostDirs() {
         String os = System.getProperty("os.name", "").toLowerCase(Locale.ROOT);
-        Path home = yanoDir.getParent() != null ? yanoDir.getParent() : Path.of(System.getProperty("user.home"));
+        Path home = browserHome;
         if (os.contains("mac")) {
             Path support = home.resolve("Library/Application Support");
             return List.of(

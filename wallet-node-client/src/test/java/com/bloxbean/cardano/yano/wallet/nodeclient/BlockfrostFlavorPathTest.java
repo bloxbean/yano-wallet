@@ -89,10 +89,11 @@ class BlockfrostFlavorPathTest {
 
     @Test
     void aMissingHistoryRouteIsReportedNotSwallowed() {
-        // Nothing registered → 404. History must degrade loudly enough for the UI
-        // to say "unavailable" rather than render a convincing empty list.
+        // Nothing registered → 404. Never a convincing empty list: the caller has
+        // to be told, either to report it or to fall back to the wallet's own
+        // record of what it sent (ADR-043, PublishedNodeHistoryGapTest).
         assertThatThrownBy(() -> ports(true).walletTransactions(STAKE, ADDRESS, 1, 10, true))
-                .isInstanceOf(HistoryPort.HistoryUnavailableException.class);
+                .isInstanceOf(HistoryPort.HistoryNotSupportedException.class);
     }
 
     // ---- DRep --------------------------------------------------------------

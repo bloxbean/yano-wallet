@@ -20,6 +20,10 @@ dependencies {
     implementation project(':wallet-node-launcher')
     implementation project(':wallet-hardware')
     implementation project(':wallet-connector-host')
+    // Zero-dependency stdio relay. Compiled INTO the app so a native build can
+    // host it in-process: a native image has no JVM to run the bundled jar with
+    // (ADR-035 M5 assumed `java -cp cip30-proxy.jar`, which is a JVM-only story).
+    implementation project(':wallet-connector-proxy')
 
     implementation libs.slf4j.api
     runtimeOnly libs.slf4j.simple
@@ -303,6 +307,11 @@ tasks.register('walletZip', Zip) {
     destinationDirectory = layout.buildDirectory.dir('dist')
     def distRoot = "yano-wallet-${project.version}"
     into(distRoot) {
+        // First thing a new user needs: how to get from this zip to a connected
+        // dApp. Shipped in the archive rather than only linked, because someone
+        // who downloaded a zip is not necessarily looking at the repository.
+        from(rootProject.file('GETTING-STARTED.md'))
+        from(rootProject.file('LICENSE'))
         into('lib') {
             from configurations.runtimeClasspath
             from tasks.named('jar')
@@ -322,4 +331,210 @@ tasks.register('walletZip', Zip) {
             include 'yano-wallet.bat', 'README.txt'
         }
     }
+}
+
+// ---------------------------------------------------------------------------
+// GraalVM native image (ADR-044)
+//
+// Toolchain: Liberica NIK *Full* — it is the only variant that carries BOTH
+// native-image AND JavaFX. Verified on macOS arm64 with `25.0.4.fx-nik`:
+//   fx-librca  = JDK + JavaFX, NO native-image
+//   r25-nik    = native-image, NO JavaFX
+//   fx-nik     = both  ← this one
+//
+// JavaFX comes from the NIK's own modules (LibericaFX), NOT from the
+// org.openjfx Maven artifacts wallet-ui depends on. Those jars carry .dylib
+// files for the JVM and would collide with the JDK modules the static libs
+// (libprism_*.a) are built against, so they are filtered off this classpath.
+// ---------------------------------------------------------------------------
+// The GraalVM distribution used for the native build. Liberica NIK *Full* is
+// required — it is the only variant carrying BOTH native-image and JavaFX.
+//
+// Deliberately NOT auto-discovered from any package manager: how the toolchain
+// is installed is the developer's (or CI's) choice, and a build that reaches
+// into ~/.sdkman only works for people who happen to use SDKMAN. Point at it:
+//
+//   ./gradlew :wallet-app:nativeImage -PnikHome=/path/to/nik
+//   NIK_HOME=/path/to/nik ./gradlew :wallet-app:nativeImage
+//
+// See README ("Native build") for how to obtain it.
+def nikHome = { ->
+    def explicit = project.findProperty('nikHome') ?: System.getenv('NIK_HOME')
+    if (!explicit) {
+        throw new GradleException(
+                'Native build needs Liberica NIK Full (native-image + JavaFX).\n'
+                        + '  Set -PnikHome=/path/to/nik or NIK_HOME=/path/to/nik\n'
+                        + '  Download (choose "Full", JDK 25): '
+                        + 'https://bell-sw.com/pages/downloads/native-image-kit/')
+    }
+    def home = new File(explicit.toString())
+    def hasNativeImage = new File(home, 'bin/native-image').isFile() ||
+            new File(home, 'bin/native-image.cmd').isFile()
+    if (!hasNativeImage) {
+        throw new GradleException("No native-image under ${home}/bin — is this a NIK install? "
+                + 'A plain JDK, even one bundling JavaFX, does not ship native-image.')
+    }
+    // Fail loudly and early: NIK *Standard* has native-image but no JavaFX, and a
+    // JavaFX-less toolchain fails much later with an obscure link error.
+    def staticDir = new File(home, 'lib/static')
+    def hasJavafx = staticDir.isDirectory() && staticDir.listFiles()?.any { d ->
+        d.isDirectory() && (d.listFiles()?.any { it.name.startsWith('libprism') } ?: false)
+    }
+    if (!hasJavafx) {
+        logger.warn("${home} looks like NIK *Standard* (no JavaFX static libs). "
+                + 'The native build requires NIK **Full**.')
+    }
+    return home.absolutePath
+}
+
+// The image classpath: our jar + runtime deps, minus JavaFX (see above).
+def nativeImageClasspath = { ->
+    def jars = configurations.runtimeClasspath.files.findAll { !(it.name ==~ /javafx-.*\.jar/) }
+    return ([tasks.named('jar').get().archiveFile.get().asFile] + jars.toList())
+            .collect { it.absolutePath }.join(File.pathSeparator)
+}
+
+def nativeConfigDir = layout.projectDirectory.dir('src/main/resources/META-INF/native-image')
+
+// Collect reflection/resource metadata by running the app on the JVM.
+// Exercise the paths you care about (unlock a wallet, open History, plug in a
+// Ledger) then quit — native-image cannot discover them any other way.
+// Metadata is PLATFORM-SPECIFIC (captured paths name e.g. darwin-aarch64) and
+// must be regenerated whenever hid4java/JNA/Jackson/BouncyCastle are bumped.
+tasks.register('nativeAgent', Exec) {
+    group = 'native'
+    description = 'Run the wallet under the native-image tracing agent to (re)generate metadata'
+    dependsOn 'jar'
+    doFirst {
+        nativeConfigDir.asFile.mkdirs()
+        // Must be NIK's java — the agent library ships only with it, and a plain
+        // JDK 25 fails with "Could not find agent library native-image-agent".
+        // Same filtered classpath and --add-modules as nativeImage, so the
+        // captured metadata describes the graph the image will actually have.
+        def cmd = ["${nikHome()}/bin/java",
+                   '--add-modules', 'javafx.controls',
+                   '--enable-native-access=ALL-UNNAMED',
+                   "-agentlib:native-image-agent=config-merge-dir=${nativeConfigDir.asFile.absolutePath}",
+                   '-cp', nativeImageClasspath()]
+        def dist = rootProject.resolveYanoDist(false)
+        if (dist) {
+            cmd += ["-Dyano.node.jar=${new File(dist, 'yano.jar').absolutePath}"]
+        }
+        // -PnativeAgentMain lets a headless probe drive paths the GUI cannot be
+        // scripted through — notably the vault unlock (Jackson *deserialisation*,
+        // which needs different registrations from the serialisation that saving
+        // a wallet exercises).
+        cmd += [(project.findProperty('nativeAgentMain')
+                ?: 'com.bloxbean.cardano.yano.wallet.app.YanoWalletApp').toString()]
+        // Pass app args through so a connect path can be captured headlessly, e.g.
+        //   -PnativeAgentArgs="--node=managed --network=preprod --auto-connect"
+        // Without exercising a real connect, Jackson/CCL reflection goes
+        // unregistered and the image fails only at runtime.
+        def extra = (project.findProperty('nativeAgentArgs') ?: '').toString()
+        if (!extra.isBlank()) {
+            cmd += extra.split('\\s+').findAll { !it.isEmpty() }
+        }
+        commandLine(cmd)
+    }
+}
+
+tasks.register('nativeImage', Exec) {
+    group = 'native'
+    description = 'Build the native Yano Wallet binary (Liberica NIK Full)'
+    dependsOn 'jar'
+    def outDir = layout.buildDirectory.dir('native').get().asFile
+    // Declare inputs, or Gradle treats the task as up to date whenever the output
+    // exists and silently ships a stale binary after a code or metadata change —
+    // which is exactly what happened the first time this was wired up.
+    inputs.files(configurations.runtimeClasspath).withPathSensitivity(PathSensitivity.RELATIVE)
+    inputs.file(tasks.named('jar').flatMap { it.archiveFile })
+    inputs.dir(nativeConfigDir).optional().withPathSensitivity(PathSensitivity.RELATIVE)
+    outputs.dir outDir
+    outputs.cacheIf { false }
+    doFirst {
+        outDir.mkdirs()
+        if (!nativeConfigDir.asFile.isDirectory()) {
+            logger.warn("No native-image metadata at ${nativeConfigDir.asFile} — "
+                    + "run ./gradlew :wallet-app:nativeAgent first, or the image will fail at "
+                    + "runtime on reflection (JNA/hid4java in particular).")
+        }
+        commandLine([
+                "${nikHome()}/bin/native-image",
+                '--no-fallback',
+                // JavaFX from LibericaFX, not the Maven artifacts
+                '--add-modules', 'javafx.controls',
+                // hid4java/JNA and JavaFX both call restricted native methods
+                '--enable-native-access=ALL-UNNAMED',
+                // JNA must initialise at RUNTIME. If com.sun.jna.Native is
+                // initialised during image build, its JNI state is baked in as
+                // zero and loading jnidispatch fails at runtime with
+                // "Unsupported JNI version 0x0" — which is what the Ledger path
+                // hit, while an isolated probe with the same classpath, flags and
+                // metadata worked because there the initialiser ran at runtime.
+                '--initialize-at-run-time=com.sun.jna,org.hid4java',
+                '-H:ConfigurationFileDirectories=' + nativeConfigDir.asFile.absolutePath,
+                '-o', new File(outDir, 'yano-wallet').absolutePath,
+                '-cp', nativeImageClasspath(),
+                'com.bloxbean.cardano.yano.wallet.app.YanoWalletApp'
+        ])
+    }
+}
+
+// Portable native distribution: the AOT-compiled wallet + the platform's native
+// Yano (binary + config/), needing neither Java nor any installed runtime.
+// Build with:  ./gradlew :wallet-app:nativeZip -PyanoNative
+tasks.register('nativeZip', Zip) {
+    group = 'native'
+    description = 'Portable zip: native wallet + native Yano node (no Java required)'
+    dependsOn 'nativeImage'
+    if (bundleNode) {
+        dependsOn ':fetchYanoNode'
+    }
+    archiveBaseName = 'yano-wallet-native'
+    archiveVersion = project.version.toString()
+    destinationDirectory = layout.buildDirectory.dir('dist')
+
+    // Everything goes under a single top-level directory named after the archive.
+    // Without this the zip is a "tarbomb": extracting it scatters yano-wallet,
+    // the launchers and yano-node/ across whatever directory the user happens to
+    // be in. Yano's own native zips use the same convention.
+    def rootDir = "yano-wallet-native-${project.version}"
+    into(rootDir)
+
+    from(layout.buildDirectory.dir('native')) {
+        // .exe on Windows — including only the bare name silently produced a zip
+        // with launchers and a node but no wallet.
+        include 'yano-wallet', 'yano-wallet.exe'
+        // Zip does not carry the POSIX executable bit by default; without this the
+        // downloaded wallet is not runnable and the failure is a bare permission
+        // error rather than anything that names the cause.
+        filePermissions { unix('rwxr-xr-x') }
+    }
+    if (bundleNode) {
+        from({ rootProject.resolveYanoDist(true) }) {
+            into 'yano-node'
+            // Same reason as above, for the node binary.
+            filePermissions { unix('rwxr-xr-x') }
+        }
+    }
+    // Launchers point the wallet at the bundled node. Without one the user must
+    // pass -Dyano.node.jar by hand, because NodeLocator looks for `.yano-node/`
+    // and would not find the sibling `yano-node/` this layout uses.
+    from('src/dist-native') {
+        filePermissions { unix('rwxr-xr-x') }
+    }
+    from(rootProject.file('GETTING-STARTED.md'))
+    from(rootProject.file('LICENSE'))
+    doFirst {
+        if (bundleNode && !rootProject.yanoNativeRequested) {
+            logger.warn("nativeZip is bundling the JVM Yano distribution, which needs a JRE the "
+                    + "native wallet does not ship. Pass -PyanoNative for the native node.")
+        }
+    }
+}
+
+// Diagnostic: what actually lands on the native-image classpath.
+tasks.register('printNativeClasspath') {
+    group = 'native'
+    doLast { println nativeImageClasspath().split(File.pathSeparator).join('\n') }
 }

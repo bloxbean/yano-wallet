@@ -39,6 +39,10 @@ public class YanoNodePorts implements NodeStatusPort, HistoryPort, TxSimulationP
     @Override
     public TxStatusView txStatus(String txHash) {
         YanoNodeClient.TxStatus status = client.getTxStatus(txHash);
+        // "pending" is unreachable today: the client reads /txs/{hash}, which
+        // answers only for transactions already in a block, so it emits just
+        // "in_block" or "unknown". Kept because PENDING is part of the port's
+        // vocabulary and a mempool-aware backend could start producing it.
         TxState state = switch (status.status().toLowerCase(Locale.ROOT)) {
             case "in_block" -> TxState.IN_BLOCK;
             case "pending" -> TxState.PENDING;
@@ -61,9 +65,18 @@ public class YanoNodePorts implements NodeStatusPort, HistoryPort, TxSimulationP
             // yaci-store has no /accounts/{stake}/transactions route at all
             // (verified against a live DevKit), so asking it there 404s and the
             // history screen shows nothing. Per-address is its equivalent.
-            List<YanoNodeClient.AddressTx> txs = client.isBlockfrostFlavor()
+            boolean byAddress = client.isBlockfrostFlavor();
+            List<YanoNodeClient.AddressTx> txs = byAddress
                     ? client.getAddressTransactions(paymentAddress, page, count, order)
                     : client.getAccountTransactions(stakeAddress, page, count, order);
+            if (txs == null) {
+                // 404: no such route (every published Yano release), or a backend
+                // that 404s an account it has never seen. Both mean "no indexed
+                // history to show", which the caller answers by falling back to
+                // the wallet's own record — never by reporting an error.
+                throw new HistoryNotSupportedException("This node serves no "
+                        + (byAddress ? "address" : "account") + " transaction index.");
+            }
             return txs
                     .stream()
                     .map(tx -> new TxRef(tx.txHash(), tx.blockHeight(), tx.blockTime(), tx.slot()))

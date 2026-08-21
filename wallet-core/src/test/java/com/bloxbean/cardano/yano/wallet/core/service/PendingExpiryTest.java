@@ -28,7 +28,7 @@ class PendingExpiryTest {
         return new PendingTransaction("aa11", null, createdAtMillis, createdAtMillis,
                 PendingTransactionStatus.PENDING, "wlt_1", "yaci-devkit",
                 BigInteger.valueOf(1_000_000), BigInteger.valueOf(170_000),
-                "addr_test1_from", "addr_test1_to", null, null, null, null, null);
+                "addr_test1_from", "addr_test1_to", null, null, null, null, null, null);
     }
 
     @Test

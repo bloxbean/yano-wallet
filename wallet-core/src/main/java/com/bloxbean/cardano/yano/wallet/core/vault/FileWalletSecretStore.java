@@ -2,6 +2,7 @@ package com.bloxbean.cardano.yano.wallet.core.vault;
 
 import com.fasterxml.jackson.annotation.JsonInclude;
 import com.fasterxml.jackson.databind.DeserializationFeature;
+import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import org.bouncycastle.crypto.generators.Argon2BytesGenerator;
 import org.bouncycastle.crypto.params.Argon2Parameters;
@@ -426,6 +427,49 @@ public class FileWalletSecretStore implements WalletSecretStore {
         }
     }
 
+    /**
+     * Refuses to replace a vault with an envelope that did not serialise fully.
+     *
+     * <p>This exists because of a real, unrecoverable data loss. Under a
+     * GraalVM native image with no reflection metadata for {@code Slot},
+     * Jackson could not read the record's accessors and serialised each key slot
+     * as <em>an empty object</em> rather than failing. The write then replaced a
+     * working vault with a structurally valid v4 envelope containing no key
+     * material, destroying the seed for two wallets.
+     *
+     * <p>Silent partial serialisation is the dangerous case: the file parses,
+     * the move succeeds, and the loss is only discovered at the next unlock —
+     * by which time the original is gone. Verifying the bytes we are about to
+     * publish costs one small read and turns that into a failed enrolment with
+     * the old vault intact.
+     */
+    private void verifyEnvelopeSurvivedSerialisation(Path tempFile, Object envelope) {
+        try {
+            JsonNode written = objectMapper.readTree(tempFile.toFile());
+            if (written == null || !written.hasNonNull("version")) {
+                throw new WalletVaultException("Refusing to write vault: envelope lost its version");
+            }
+            JsonNode slots = written.get("slots");
+            if (slots != null && slots.isArray()) {
+                for (JsonNode slot : slots) {
+                    // An empty slot means the accessors did not serialise. Never
+                    // publish it — that is the loss described above.
+                    if (!slot.fieldNames().hasNext()) {
+                        throw new WalletVaultException(
+                                "Refusing to write vault: a key slot serialised as empty. "
+                                        + "The existing vault has been left untouched. On a native "
+                                        + "build this means reflection metadata is missing for the "
+                                        + "vault slot type.");
+                    }
+                }
+            } else if (written.has("ciphertext") && written.get("ciphertext").asText("").isBlank()) {
+                throw new WalletVaultException("Refusing to write vault: ciphertext serialised empty");
+            }
+        } catch (IOException e) {
+            throw new WalletVaultException("Refusing to write vault: it did not read back", e);
+        }
+    }
+
     private void writeAtomically(Object envelope) {
         Path parent = vaultFile.toAbsolutePath().getParent();
         try {
@@ -437,6 +481,7 @@ public class FileWalletSecretStore implements WalletSecretStore {
                     : Files.createTempFile(vaultFile.getFileName().toString(), ".tmp");
             try {
                 objectMapper.writerWithDefaultPrettyPrinter().writeValue(tempFile.toFile(), envelope);
+                verifyEnvelopeSurvivedSerialisation(tempFile, envelope);
                 try {
                     Files.move(tempFile, vaultFile,
                             StandardCopyOption.REPLACE_EXISTING, StandardCopyOption.ATOMIC_MOVE);
