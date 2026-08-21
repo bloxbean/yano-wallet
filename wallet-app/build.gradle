@@ -311,6 +311,7 @@ tasks.register('walletZip', Zip) {
         // dApp. Shipped in the archive rather than only linked, because someone
         // who downloaded a zip is not necessarily looking at the repository.
         from(rootProject.file('GETTING-STARTED.md'))
+        from(rootProject.file('LICENSE'))
         into('lib') {
             from configurations.runtimeClasspath
             from tasks.named('jar')
@@ -523,6 +524,7 @@ tasks.register('nativeZip', Zip) {
         filePermissions { unix('rwxr-xr-x') }
     }
     from(rootProject.file('GETTING-STARTED.md'))
+    from(rootProject.file('LICENSE'))
     doFirst {
         if (bundleNode && !rootProject.yanoNativeRequested) {
             logger.warn("nativeZip is bundling the JVM Yano distribution, which needs a JRE the "

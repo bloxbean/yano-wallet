@@ -6,6 +6,24 @@ come from a chain you validated yourself.
 
 > Your keys. Your node. Nothing in between.
 
+---
+
+> [!WARNING]
+> **Test networks only — do not use this wallet with real funds.**
+>
+> Yano Wallet is under active development and has not been audited. Use it with
+> a local development network (**Yaci DevKit**, **Yano DevNet**) or a public
+> test network (**Preprod**, **Preview**), where ADA has no value.
+>
+> **Do not use it on Mainnet, and do not restore a recovery phrase that holds
+> real funds** — entering those words here puts them at risk. Create a fresh
+> wallet for testing instead.
+>
+> Provided "as is", without warranty of any kind. You are responsible for any
+> loss. See [LICENSE](LICENSE).
+
+---
+
 - Software and **hardware** (Ledger) wallets, multi-account per CIP-1852
 - Send/receive with native assets, staking, governance (CIP-1694) and voting
 - **CIP-30 dApp connector** via a browser extension over Chrome Native Messaging
@@ -204,4 +222,4 @@ Design decisions live in [`adr/`](adr/); known gaps in [`BACKLOG.md`](BACKLOG.md
 
 ## License
 
-MIT
+[MIT](LICENSE)

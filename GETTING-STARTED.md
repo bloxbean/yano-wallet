@@ -6,6 +6,16 @@ else's API.
 
 This guide takes you from a GitHub release to a dApp connected to your wallet.
 
+> [!WARNING]
+> **Test networks only — do not use this wallet with real funds.**
+>
+> Yano Wallet is under active development and has not been audited. Use it with
+> a local development network (**Yaci DevKit**, **Yano DevNet**) or a public
+> test network (**Preprod**, **Preview**), where ADA has no value.
+>
+> **Do not use it on Mainnet, and do not restore a recovery phrase that holds
+> real funds.** Create a fresh wallet for testing instead.
+
 ---
 
 ## 1. Pick a download
@@ -82,8 +92,9 @@ These builds are **not yet code-signed**, so the first launch is blocked:
 
 You land on the **Connect** screen.
 
-1. Choose a **network** — start with **Preprod** (a test network with free test
-   ADA) rather than Mainnet.
+1. Choose a **network** — use **Preprod** or **Preview** (public test networks
+   with free test ADA), or a local **Yaci DevKit** / **Yano DevNet**. Not
+   Mainnet: see the warning above.
 2. Choose how to reach the chain:
    - **Run a local node** — the wallet starts and manages its own Yano node.
      This is the full-node experience and needs no external service.
@@ -105,7 +116,8 @@ You land on the **Connect** screen.
 - **Create a new wallet** — you get a **24-word recovery phrase**. Write it down
   and store it offline. It is the only way to recover the wallet if you lose
   this machine, and nobody can recover it for you.
-- **Restore an existing wallet** — enter your 24 words.
+- **Restore an existing wallet** — enter your 24 words. Only ever restore a
+  **test** wallet here; never a phrase that holds real funds.
 - **Connect a hardware wallet** — Ledger over USB. Unlock the device and open
   the **Cardano app** first, then click **Connect**. Keys never leave the device.
 
