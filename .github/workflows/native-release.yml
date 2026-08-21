@@ -110,6 +110,11 @@ jobs:
           if [ -d "$root/Contents/Home" ]; then root="$root/Contents/Home"; fi
           test -x "$root/bin/native-image" || test -f "$root/bin/native-image.cmd"
           echo "home=$root" >> "$GITHUB_OUTPUT"
+          # Gradle runs on the NIK JDK too, not just native-image. Without this the
+          # runner's default JDK is used, and ubuntu-22.04 still defaults to Java 11:
+          # "Gradle requires JVM 17 or later". It also guarantees the JDK that
+          # compiles the classes is the one that turns them into a native image.
+          echo "JAVA_HOME=$root" >> "$GITHUB_ENV"
           echo "NIK_HOME=$root"
           "$root/bin/java" -version 2>&1 | head -2
 
