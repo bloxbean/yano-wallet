@@ -192,6 +192,11 @@ jobs:
           root=$(find "${{ runner.temp }}/nik" -maxdepth 1 -mindepth 1 -type d | head -1)
           if [ -d "$root/Contents/Home" ]; then root="$root/Contents/Home"; fi
           echo "home=$root" >> "$GITHUB_OUTPUT"
+          # Gradle runs on the NIK JDK too, not just native-image. Without this the
+          # runner's default JDK is used, and ubuntu-22.04 still defaults to Java 11:
+          # "Gradle requires JVM 17 or later". It also guarantees the JDK that
+          # compiles the classes is the one that turns them into a native image.
+          echo "JAVA_HOME=$root" >> "$GITHUB_ENV"
 
       - name: Grant execute permission for gradlew
         if: ${{ runner.os != 'Windows' && (inputs.platforms == 'all' || inputs.platforms == matrix.platform) }}
