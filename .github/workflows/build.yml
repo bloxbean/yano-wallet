@@ -52,22 +52,16 @@ jobs:
       - name: Build and test
         run: ./gradlew build --no-daemon
 
-      # Unzip the artifact, then chrome://extensions > Developer mode > Load
-      # unpacked. The manifest's public "key" travels with it, so the extension
-      # keeps the id the wallet's native messaging host allowlists — no signing
-      # key is used or needed here (see gradle/connector.gradle).
+      # The manifest's public "key" travels with the zip, so the extension keeps
+      # the id the wallet's native messaging host allowlists — no signing key is
+      # used or needed here (see gradle/connector.gradle).
+      #
+      # Packaged but NOT uploaded. The point here is that connectorZip still
+      # works; the zip people actually download is published by release.yml on a
+      # tag. build.yml runs on every push and pull request, so storing a
+      # per-commit copy just accumulates artifacts nobody fetches.
       - name: Package browser connector
         run: ./gradlew connectorZip --no-daemon
-
-      - name: Upload browser connector
-        uses: actions/upload-artifact@v4
-        with:
-          # Artifact name carries the commit; the file inside keeps the
-          # extension's own version, which is the one Chrome reads.
-          name: yano-connector-${{ github.sha }}
-          path: build/dist/yano-connector-*.zip
-          if-no-files-found: error
-          retention-days: 14
 
       # Reports are what make a red build diagnosable without re-running it
       # locally, so keep them even when (especially when) the build failed.
