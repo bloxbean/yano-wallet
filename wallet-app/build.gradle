@@ -377,8 +377,11 @@ def nikHome = { ->
     // Fail loudly and early: NIK *Standard* has native-image but no JavaFX, and a
     // JavaFX-less toolchain fails much later with an obscure link error.
     def staticDir = new File(home, 'lib/static')
+    // libprism*.a on macOS/Linux, prism*.lib on Windows — match either, or the
+    // warning below fires on a perfectly good NIK Full and sends whoever reads
+    // it hunting for the wrong problem.
     def hasJavafx = staticDir.isDirectory() && staticDir.listFiles()?.any { d ->
-        d.isDirectory() && (d.listFiles()?.any { it.name.startsWith('libprism') } ?: false)
+        d.isDirectory() && (d.listFiles()?.any { it.name.toLowerCase().contains('prism') } ?: false)
     }
     if (!hasJavafx) {
         logger.warn("${home} looks like NIK *Standard* (no JavaFX static libs). "
@@ -459,7 +462,9 @@ tasks.register('nativeImage', Exec) {
                     + "runtime on reflection (JNA/hid4java in particular).")
         }
         commandLine([
-                "${nikHome()}/bin/native-image",
+                // .cmd on Windows: Gradle cannot exec the extensionless path and
+                // fails with "A problem occurred starting process".
+                isWindows ? "${nikHome()}/bin/native-image.cmd" : "${nikHome()}/bin/native-image",
                 '--no-fallback',
                 // JavaFX from LibericaFX, not the Maven artifacts
                 '--add-modules', 'javafx.controls',
