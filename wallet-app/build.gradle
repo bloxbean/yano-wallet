@@ -461,10 +461,7 @@ tasks.register('nativeImage', Exec) {
                     + "run ./gradlew :wallet-app:nativeAgent first, or the image will fail at "
                     + "runtime on reflection (JNA/hid4java in particular).")
         }
-        commandLine([
-                // .cmd on Windows: Gradle cannot exec the extensionless path and
-                // fails with "A problem occurred starting process".
-                isWindows ? "${nikHome()}/bin/native-image.cmd" : "${nikHome()}/bin/native-image",
+        def args = [
                 '--no-fallback',
                 // JavaFX from LibericaFX, not the Maven artifacts
                 '--add-modules', 'javafx.controls',
@@ -481,6 +478,25 @@ tasks.register('nativeImage', Exec) {
                 '-o', new File(outDir, 'yano-wallet').absolutePath,
                 '-cp', nativeImageClasspath(),
                 'com.bloxbean.cardano.yano.wallet.app.YanoWalletApp'
+        ]
+
+        // Pass the arguments in a file rather than on the command line. The
+        // classpath alone is ~100 absolute jar paths, which on Windows exceeds
+        // cmd.exe's 8191-character limit and fails as "The command line is too
+        // long" — after Gradle has compiled everything, so it looks like a
+        // native-image problem rather than a shell one.
+        //
+        // Backslashes are ESCAPE characters inside an argument file, so Windows
+        // paths have to be written with forward slashes; every Java tool accepts
+        // them, native-image included.
+        def argFile = new File(outDir, 'native-image-args.txt')
+        argFile.text = args.collect { it.toString().replace('\\', '/') }.join('\n')
+
+        commandLine([
+                // .cmd on Windows: Gradle cannot exec the extensionless path and
+                // fails with "A problem occurred starting process".
+                isWindows ? "${nikHome()}/bin/native-image.cmd" : "${nikHome()}/bin/native-image",
+                '@' + argFile.absolutePath
         ])
     }
 }
