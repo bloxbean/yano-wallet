@@ -4,8 +4,16 @@ name: native-release
 #   * yano-wallet-native-<os>_<arch>_<version>.zip — the AOT-compiled wallet plus
 #     the platform's NATIVE Yano node. Needs nothing installed: no Java, no JRE.
 #
-#   preview : Actions > Run workflow   -> uploads as workflow ARTIFACTS
-#   release : push a tag v<version>    -> uploads to the RELEASE for that tag
+#   release : push a tag v<version>  -> attaches the files to that tag's RELEASE
+#   dry run : Actions > Run workflow -> builds everything and publishes NOTHING,
+#             not even a workflow artifact. Use it to check the build still works
+#             before tagging; use dev-release.yml when you need the files.
+#
+# No actions/upload-artifact here on purpose. On a tag build the Release assets
+# already are the download, so an artifact is a second copy of a multi-hundred-MB
+# zip charged against the org's shared Actions storage — a v0.0.1-dev3 tag build
+# did exactly that, used 2.4 GB and exhausted the quota. dev-release.yml covers
+# the case where you want the files without cutting a Release.
 #
 # Kept separate from release.yml on purpose. That workflow builds the JVM
 # artifacts (jpackage installers + BYO-Java zip) on four platforms; this one
@@ -166,17 +174,6 @@ jobs:
             mv -v "$f" "yano-wallet-native-${osarch}_${ver}.zip"
           done
           ls -la
-
-      - name: Upload workflow artifacts (preview + release)
-        uses: actions/upload-artifact@v4
-        with:
-          name: yano-wallet-native-${{ steps.ver.outputs.version }}-${{ matrix.platform }}
-          path: wallet-app/build/dist/yano-wallet-native-*.zip
-          if-no-files-found: error
-          # Short-lived on purpose: these are throwaway build outputs, and the
-          # zips are large. Does NOT affect assets attached to a GitHub Release —
-          # those are permanent and are published by action-gh-release below.
-          retention-days: 2
 
       - name: Attach to the GitHub Release (tag builds only)
         if: startsWith(github.ref, 'refs/tags/')

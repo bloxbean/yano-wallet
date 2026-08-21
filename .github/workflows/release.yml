@@ -8,8 +8,16 @@ name: release
 # Plus one OS-independent artifact built once, in its own job:
 #   * the browser extension zip (CIP-30 connector) — unzip, then Load unpacked
 #
-#   preview : Actions > Run workflow      -> uploads as workflow ARTIFACTS
-#   release : push a tag  v<version>      -> uploads to the RELEASE for that tag
+#   release : push a tag v<version>  -> attaches the files to that tag's RELEASE
+#   dry run : Actions > Run workflow -> builds everything and publishes NOTHING,
+#             not even a workflow artifact. Use it to check the build still works
+#             before tagging; use dev-release.yml when you need the files.
+#
+# No actions/upload-artifact here on purpose. On a tag build the Release assets
+# already are the download, so an artifact is a second copy of a multi-hundred-MB
+# zip charged against the org's shared Actions storage — a v0.0.1-dev3 tag build
+# did exactly that, used 2.4 GB and exhausted the quota. dev-release.yml covers
+# the case where you want the files without cutting a Release.
 #
 # Only tagged pushes land on a Release; everyday pushes and pull requests are
 # built by build.yml, which skips packaging entirely so it stays fast.
@@ -127,24 +135,6 @@ jobs:
           done
           ls -la
 
-      - name: Upload workflow artifacts (preview + release)
-        uses: actions/upload-artifact@v4
-        with:
-          name: yano-wallet-${{ steps.ver.outputs.version }}-${{ matrix.platform }}
-          path: |
-            wallet-app/build/dist/*.dmg
-            wallet-app/build/dist/*.pkg
-            wallet-app/build/dist/*.msi
-            wallet-app/build/dist/*.exe
-            wallet-app/build/dist/*.deb
-            wallet-app/build/dist/*.rpm
-            wallet-app/build/dist/*-portable.zip
-          if-no-files-found: error
-          # Short-lived on purpose: these are throwaway build outputs, and the
-          # zips are large. Does NOT affect assets attached to a GitHub Release —
-          # those are permanent and are published by action-gh-release below.
-          retention-days: 2
-
       - name: Attach to the GitHub Release (tag builds only)
         if: startsWith(github.ref, 'refs/tags/')
         uses: softprops/action-gh-release@v2
@@ -184,14 +174,6 @@ jobs:
 
       - name: Package browser connector
         run: ./gradlew connectorZip --no-daemon
-
-      - name: Upload workflow artifact (preview + release)
-        uses: actions/upload-artifact@v4
-        with:
-          name: yano-connector
-          path: build/dist/yano-connector-*.zip
-          if-no-files-found: error
-          retention-days: 2
 
       - name: Attach to the GitHub Release (tag builds only)
         if: startsWith(github.ref, 'refs/tags/')

@@ -30,6 +30,11 @@ on:
         type: choice
         default: all
         options: [all, macos-arm64, linux-x86_64, windows-x86_64, linux-arm64]
+      upload_from:
+        description: 'Which platform to UPLOAD (others build only, no artifact)'
+        type: choice
+        default: macos-arm64
+        options: [macos-arm64, all, none, linux-x86_64, windows-x86_64, linux-arm64]
 
 env:
   NIK_JDK: '25.0.4+10'
@@ -107,8 +112,12 @@ jobs:
         shell: bash
         run: ./gradlew :wallet-app:jpackageInstaller :wallet-app:walletZip --no-daemon
 
+      # Build everywhere, upload from ONE platform by default. Every platform is
+      # still compiled and smoke-tested — that is what catches a broken build —
+      # but only the artifact someone will actually download is stored, because
+      # the org's Actions storage is shared and a full run is several GB.
       - name: Upload artifacts
-        if: ${{ inputs.platforms == 'all' || inputs.platforms == matrix.platform }}
+        if: ${{ (inputs.platforms == 'all' || inputs.platforms == matrix.platform) && (inputs.upload_from == 'all' || inputs.upload_from == matrix.platform) }}
         uses: actions/upload-artifact@v4
         with:
           name: dev-jvm-${{ steps.ver.outputs.version }}-${{ matrix.platform }}
@@ -227,8 +236,12 @@ jobs:
           "$bin" --hid-probe || true
           echo "native binary is runnable"
 
+      # Build everywhere, upload from ONE platform by default. Every platform is
+      # still compiled and smoke-tested — that is what catches a broken build —
+      # but only the artifact someone will actually download is stored, because
+      # the org's Actions storage is shared and a full run is several GB.
       - name: Upload artifacts
-        if: ${{ inputs.platforms == 'all' || inputs.platforms == matrix.platform }}
+        if: ${{ (inputs.platforms == 'all' || inputs.platforms == matrix.platform) && (inputs.upload_from == 'all' || inputs.upload_from == matrix.platform) }}
         uses: actions/upload-artifact@v4
         with:
           name: dev-native-${{ steps.ver.outputs.version }}-${{ matrix.platform }}
