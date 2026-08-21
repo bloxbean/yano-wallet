@@ -61,8 +61,13 @@ jobs:
 
       # Reports are what make a red build diagnosable without re-running it
       # locally, so keep them even when (especially when) the build failed.
+      #
+      # continue-on-error: a convenience, never a gate. Losing the upload — a
+      # storage quota, a flaky artifact service — must not turn a passing build
+      # red, which is exactly what an exhausted org-wide quota did here.
       - name: Upload test reports
         if: always()
+        continue-on-error: true
         uses: actions/upload-artifact@v4
         with:
           name: test-reports
