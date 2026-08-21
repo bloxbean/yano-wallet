@@ -169,9 +169,15 @@ registration points at an exact path on disk.
 ## 7. Try it
 
 1. Make sure the wallet is **running and unlocked**.
-2. Open a Cardano dApp that supports CIP-30 and choose **Yano** in its wallet
-   list.
+2. Open the **[demo dApp](https://bloxbean.github.io/yano-wallet/tx-demo/)** and click
+   **Connect Yano**. Then try **Send ₳2 to myself** — a real transaction, built
+   in the browser, signed and submitted through your wallet.
 3. The wallet shows an approval prompt. Approve it.
+
+Any dApp supporting CIP-30 works the same way: choose **Yano** in its wallet
+list. The demo exists because the extension is not in the Chrome Web Store yet,
+so most dApps do not list Yano — it gives you something to check your install
+against.
 
 Every signature is approved in the wallet, on your machine. The dApp never sees
 your keys or your recovery phrase.

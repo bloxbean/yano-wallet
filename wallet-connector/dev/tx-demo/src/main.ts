@@ -1,12 +1,13 @@
 import {
   BrowserWallet,
+  MeshTxBuilder,
   Transaction,
   resolveDataHash,
   resolvePaymentKeyHash,
   resolvePlutusScriptAddress,
 } from "@meshsdk/core";
 import type { PlutusScript, UTxO } from "@meshsdk/core";
-import { DEFAULT_PROTOCOL_PARAMETERS } from "@meshsdk/common";
+import { DEFAULT_PROTOCOL_PARAMETERS, DEFAULT_REDEEMER_BUDGET } from "@meshsdk/common";
 import { NETWORKS, selectNetwork, selectedNetwork } from "./networks";
 import type { NetworkId } from "./networks";
 
@@ -25,11 +26,24 @@ const lockBtn = document.getElementById("lock") as HTMLButtonElement;
 const unlockBtn = document.getElementById("unlock") as HTMLButtonElement;
 const info = document.getElementById("info") as HTMLDivElement;
 const lockInfo = document.getElementById("lockInfo") as HTMLDivElement;
+const plutusNote = document.getElementById("plutusNote") as HTMLDivElement;
 const statusEl = document.getElementById("status") as HTMLDivElement;
 const networkPicker = document.getElementById("network") as HTMLSelectElement;
 const networkHint = document.getElementById("networkHint") as HTMLDivElement;
 
 let wallet: BrowserWallet | null = null;
+
+// The Plutus flows need the chain's current cost models, and both providers are
+// pointed at a Vite dev-server proxy prefix — browser-direct calls to Koios are
+// blocked (CORS / Cloudflare) and a devnet on localhost:8080 is cross-origin
+// too (see networks.ts). A BUILT bundle has no dev server, so on the hosted
+// page those two buttons cannot work and are disabled rather than left to fail.
+//
+// Connect and send need no chain provider at all: every input comes from the
+// wallet over CIP-30, protocol params are the baked-in defaults, and submitTx
+// goes through the wallet to its own node. That is the whole CIP-30 core, and
+// it works anywhere — which is what makes a hosted demo worth having.
+const PLUTUS_AVAILABLE = import.meta.env.DEV;
 
 // --- Plutus script test (ADR-035 M4): lock at always-succeeds, then unlock. ---
 // The unlock is a genuine script transaction: script input + redeemer +
@@ -53,8 +67,15 @@ function savedLock(): { txHash: string; datumValue: string } | null {
 function refreshLockUi() {
   const lock = savedLock();
   lockInfo.textContent = lock ? "Locked ₳3 in tx " + lock.txHash.slice(0, 16) + "… (ready to unlock)" : "";
-  unlockBtn.disabled = !wallet || !lock;
-  lockBtn.disabled = !wallet;
+  unlockBtn.disabled = !PLUTUS_AVAILABLE || !wallet || !lock;
+  lockBtn.disabled = !PLUTUS_AVAILABLE || !wallet;
+}
+
+if (!PLUTUS_AVAILABLE) {
+  plutusNote.innerHTML =
+    "Unavailable on the hosted demo — the lock/unlock flows read cost models through " +
+    "the dev-server proxy. Clone the repo and run <code>npm run dev</code> in " +
+    "<code>wallet-connector/dev/tx-demo</code> to try them.";
 }
 
 function show(html: string, kind: "info" | "success" | "error") {
@@ -171,6 +192,29 @@ lockBtn.addEventListener("click", async () => {
   refreshLockUi();
 });
 
+// CIP-30's getCollateral is DEPRECATED: since CIP-40 (Babbage) a transaction may
+// use ANY utxos as collateral and hand the surplus back with a collateral return
+// output, so a wallet no longer has to reserve a pure-ADA utxo for the purpose.
+// Wallets are explicitly allowed not to implement it, and one that does must
+// return ada-only utxos — an account holding native tokens on every utxo has
+// none to give, which is a dead end the dapp can avoid entirely by nominating
+// its own collateral. So: pick a utxo here rather than asking the wallet.
+//
+// Preference is the biggest ada-only utxo (nothing to return, cheapest path);
+// otherwise the biggest utxo of any kind, whose tokens come back via the
+// collateral return address set on the transaction below.
+function pickCollateral(utxos: UTxO[]): UTxO {
+  const lovelaceOf = (u: UTxO) =>
+    BigInt(u.output.amount.find((a) => a.unit === "lovelace")?.quantity ?? "0");
+  const byLovelaceDesc = (a: UTxO, b: UTxO) => (lovelaceOf(b) > lovelaceOf(a) ? 1 : -1);
+  const adaOnly = utxos.filter((u) => u.output.amount.length === 1).sort(byLovelaceDesc);
+  const chosen = adaOnly[0] ?? [...utxos].sort(byLovelaceDesc)[0];
+  if (!chosen) {
+    throw new Error("The wallet has no utxos to use as collateral — fund the account first.");
+  }
+  return chosen;
+}
+
 // Unlock: the real Plutus transaction — spends the script utxo with a redeemer,
 // wallet collateral, and a script-data-hash. Signed on the Ledger in PLUTUS mode.
 unlockBtn.addEventListener("click", async () => {
@@ -197,11 +241,41 @@ unlockBtn.addEventListener("click", async () => {
     // No evaluator: Koios's Ogmios evaluate passthrough rejects anonymous browser
     // POSTs (ERR_NETWORK). Mesh's default redeemer budget (7M mem / 3B steps) is
     // plenty for always-succeeds.
-    const tx = new Transaction({ initiator: wallet, fetcher: provider });
-    tx.txBuilder.setCostModels(costModels);
-    tx.redeemValue({ value: scriptUtxo, script: ALWAYS_SUCCEEDS, datum: lock.datumValue });
-    tx.sendValue(await wallet.getChangeAddress(), scriptUtxo);
-    const unsigned = await tx.build();
+    // MeshTxBuilder rather than Transaction: Transaction.build() always calls the
+    // wallet's getCollateral() and throws "No pure lovelace utxos found for
+    // collateral" when it comes back empty — even if collateral was set by hand.
+    // Here every input, including collateral, is nominated explicitly.
+    const utxos = await wallet.getUtxos();
+    const changeAddress = await wallet.getChangeAddress();
+    const collateral = pickCollateral(utxos);
+
+    const tx = new MeshTxBuilder({ fetcher: provider });
+    tx.setCostModels(costModels);
+    const unsigned = await tx
+      .spendingPlutusScriptV1()
+      .txIn(
+        scriptUtxo.input.txHash,
+        scriptUtxo.input.outputIndex,
+        scriptUtxo.output.amount,
+        scriptUtxo.output.address
+      )
+      .txInScript(ALWAYS_SUCCEEDS.code)
+      .txInDatumValue(lock.datumValue)
+      .txInRedeemerValue({ alternative: 0, fields: ["mesh"] }, "Mesh", DEFAULT_REDEEMER_BUDGET)
+      .txOut(changeAddress, scriptUtxo.output.amount)
+      .txInCollateral(
+        collateral.input.txHash,
+        collateral.input.outputIndex,
+        collateral.output.amount,
+        collateral.output.address
+      )
+      // Required when the collateral utxo carries native tokens, harmless when it
+      // does not: without it the ledger rejects non-ada in collateral, and only
+      // totalCollateral is at risk instead of the whole utxo.
+      .setCollateralReturnAddress(changeAddress)
+      .changeAddress(changeAddress)
+      .selectUtxosFrom(utxos)
+      .complete();
 
     show("Waiting for signature — approve in Yano, then confirm the Plutus tx on the device…", "info");
     const signed = await wallet.signTx(unsigned, true);
