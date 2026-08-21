@@ -52,8 +52,10 @@ jobs:
         with:
           node-version: '20'
 
+      # npm install, not npm ci: package-lock.json is gitignored here (see
+      # tx-demo/.gitignore), so there is no lockfile in the repo for ci to read.
       - name: Install
-        run: npm ci
+        run: npm install --no-audit --no-fund
 
       - uses: actions/configure-pages@v5
 
