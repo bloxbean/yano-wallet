@@ -1,7 +1,7 @@
 name: pages
 
 # Publishes the CIP-30 demo dapp to GitHub Pages:
-#   https://bloxbean.github.io/yano-wallet/
+#   https://bloxbean.github.io/yano-wallet/tx-demo/
 #
 # It exists because GETTING-STARTED.md's last step — "open a dApp and choose
 # Yano" — has nowhere to point: the connector extension is not in the Chrome
@@ -15,7 +15,8 @@ name: pages
 #
 # main only. The github-pages environment restricts deployments to the default
 # branch, so a run from a feature branch would fail the protection rule; verify
-# a branch locally with `DEMO_BASE=/yano-wallet/ npm run build && npx vite preview`.
+# a branch locally with
+#   DEMO_BASE=/yano-wallet/tx-demo/ npm run build && npx vite preview
 
 on:
   push:
@@ -60,12 +61,38 @@ jobs:
       # that prefix. Without it the page loads and the script 404s — a blank page.
       - name: Build
         env:
-          DEMO_BASE: /${{ github.event.repository.name }}/
+          DEMO_BASE: /${{ github.event.repository.name }}/tx-demo/
         run: npm run build
+
+      # The artifact's contents become the site ROOT, so the build is staged
+      # under tx-demo/ rather than uploaded directly — that keeps
+      # /yano-wallet/ free for documentation later instead of the demo
+      # occupying it and having to move (a moved URL is a dead link in every
+      # zip's GETTING-STARTED.md already shipped).
+      - name: Stage the site
+        run: |
+          set -euo pipefail
+          site="$GITHUB_WORKSPACE/_site"
+          mkdir -p "$site/tx-demo"
+          cp -R dist/. "$site/tx-demo/"
+          # Placeholder so the site root is not a 404 — deploy-pages reports the
+          # root as this run's URL. Replace it when real docs land.
+          cat > "$site/index.html" <<'HTML'
+          <!doctype html><meta charset="utf-8"><title>Yano Wallet</title>
+          <meta name="viewport" content="width=device-width,initial-scale=1">
+          <body style="font:14px/1.6 system-ui,sans-serif;background:#12162c;color:#eef1ff;display:grid;place-items:center;min-height:100vh;margin:0">
+          <main style="text-align:center">
+          <h1 style="font-size:20px;margin:0 0 6px">Yano Wallet</h1>
+          <p style="color:#9aa4d6;margin:0 0 14px">A full-node Cardano desktop wallet.</p>
+          <p><a style="color:#93c5fd" href="tx-demo/">CIP-30 demo dApp</a> &middot;
+             <a style="color:#93c5fd" href="https://github.com/bloxbean/yano-wallet">Source</a></p>
+          </main>
+          HTML
+          ls -R "$site" | head -20
 
       - uses: actions/upload-pages-artifact@v3
         with:
-          path: wallet-connector/dev/tx-demo/dist
+          path: _site
 
       - id: deployment
         uses: actions/deploy-pages@v4
