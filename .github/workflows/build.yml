@@ -55,11 +55,7 @@ jobs:
       # The manifest's public "key" travels with the zip, so the extension keeps
       # the id the wallet's native messaging host allowlists — no signing key is
       # used or needed here (see gradle/connector.gradle).
-      #
-      # Packaged but NOT uploaded. The point here is that connectorZip still
-      # works; the zip people actually download is published by release.yml on a
-      # tag. build.yml runs on every push and pull request, so storing a
-      # per-commit copy just accumulates artifacts nobody fetches.
+      # Not uploaded: release.yml publishes the zip people install.
       - name: Package browser connector
         run: ./gradlew connectorZip --no-daemon
 

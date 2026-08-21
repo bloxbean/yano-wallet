@@ -5,15 +5,11 @@ name: native-release
 #     the platform's NATIVE Yano node. Needs nothing installed: no Java, no JRE.
 #
 #   release : push a tag v<version>  -> attaches the files to that tag's RELEASE
-#   dry run : Actions > Run workflow -> builds everything and publishes NOTHING,
-#             not even a workflow artifact. Use it to check the build still works
-#             before tagging; use dev-release.yml when you need the files.
+#   dry run : Actions > Run workflow -> builds everything, publishes nothing
 #
-# No actions/upload-artifact here on purpose. On a tag build the Release assets
-# already are the download, so an artifact is a second copy of a multi-hundred-MB
-# zip charged against the org's shared Actions storage — a v0.0.1-dev3 tag build
-# did exactly that, used 2.4 GB and exhausted the quota. dev-release.yml covers
-# the case where you want the files without cutting a Release.
+# No upload-artifact on purpose: on a tag the Release assets already are the
+# download, so an artifact is just a second copy of a multi-hundred-MB zip.
+# Use dev-release.yml when you want the files without cutting a Release.
 #
 # Kept separate from release.yml on purpose. That workflow builds the JVM
 # artifacts (jpackage installers + BYO-Java zip) on four platforms; this one

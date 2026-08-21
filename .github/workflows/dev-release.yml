@@ -112,11 +112,8 @@ jobs:
         shell: bash
         run: ./gradlew :wallet-app:jpackageInstaller :wallet-app:walletZip --no-daemon
 
-      # Uploads every platform by default. Safe because Actions storage is free
-      # for PUBLIC repositories; a full run is ~4-5 GB (4 x ~600 MB JVM +
-      # 3 x ~160 MB native) and would exhaust a private repo's quota outright —
-      # no retention period helps, since nothing expires mid-run. If this repo
-      # ever goes private again, set upload_from back to a single platform.
+      # A full run is ~4-5 GB, free only while this repo is public. If it ever
+      # goes private, set upload_from to one platform.
       - name: Upload artifacts
         if: ${{ (inputs.platforms == 'all' || inputs.platforms == matrix.platform) && (inputs.upload_from == 'all' || inputs.upload_from == matrix.platform) }}
         uses: actions/upload-artifact@v4
@@ -128,8 +125,7 @@ jobs:
             wallet-app/build/dist/*.deb
             wallet-app/build/dist/*.zip
           if-no-files-found: error
-          # Short-lived on purpose: dev builds are handed round for a quick test
-          # and the zips are large. Re-run the workflow to get a fresh copy.
+          # Throwaway test builds — re-run the workflow for a fresh copy.
           retention-days: 5
 
   native:
@@ -237,11 +233,8 @@ jobs:
           "$bin" --hid-probe || true
           echo "native binary is runnable"
 
-      # Uploads every platform by default. Safe because Actions storage is free
-      # for PUBLIC repositories; a full run is ~4-5 GB (4 x ~600 MB JVM +
-      # 3 x ~160 MB native) and would exhaust a private repo's quota outright —
-      # no retention period helps, since nothing expires mid-run. If this repo
-      # ever goes private again, set upload_from back to a single platform.
+      # A full run is ~4-5 GB, free only while this repo is public. If it ever
+      # goes private, set upload_from to one platform.
       - name: Upload artifacts
         if: ${{ (inputs.platforms == 'all' || inputs.platforms == matrix.platform) && (inputs.upload_from == 'all' || inputs.upload_from == matrix.platform) }}
         uses: actions/upload-artifact@v4
