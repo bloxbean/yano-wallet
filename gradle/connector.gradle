@@ -16,14 +16,38 @@ import groovy.json.JsonSlurper
 
 def connectorDir = file("$rootDir/wallet-connector")
 
-// The extension owns its own version. It ships on Chrome Web Store review
-// cycles rather than the wallet's release cadence, and walletVersion could not
-// drive it even if we wanted that: "0.0.1-dev3" is not a legal Chrome version
-// (1-4 dot-separated integers), and the "0.0.1" underneath it would be a
-// *downgrade* of the manifest's current 0.1.0. So this reads the manifest and
-// never writes to it.
-def connectorVersion = providers.provider {
-    new JsonSlurper().parse(new File(connectorDir, 'manifest.json')).version
+// The connector carries the WALLET's version, so a release's assets all agree:
+// yano-connector-0.1.0-pre3.zip next to yano-wallet-*-0.1.0-pre3.*. Shipping
+// them together and versioning them apart only invites "which connector goes
+// with which wallet?".
+//
+// Chrome will not accept "0.1.0-pre3" as a version — the manifest's `version`
+// must be 1-4 dot-separated integers. So the pre-release suffix is stripped for
+// `version` and the full string goes in `version_name`, which is exactly what
+// that field is for and is what Chrome shows the user.
+//
+// The manifest in the repo is therefore a TEMPLATE: its version fields are
+// rewritten into the zip, never edited in place, so the working tree does not
+// churn on every release.
+def walletVersion = (project.findProperty('walletVersion') ?: project.version).toString()
+def chromeVersion = walletVersion.replaceFirst(/[-+].*$/, '')
+
+def patchedManifest = layout.buildDirectory.file('connector/manifest.json')
+
+tasks.register('connectorManifest') {
+    description = 'Stamp the wallet version into a copy of the extension manifest'
+    def source = new File(connectorDir, 'manifest.json')
+    inputs.file(source)
+    inputs.property('walletVersion', walletVersion)
+    outputs.file(patchedManifest)
+    doLast {
+        def manifest = new JsonSlurper().parse(source)
+        manifest.version = chromeVersion
+        manifest.version_name = walletVersion
+        def out = patchedManifest.get().asFile
+        out.parentFile.mkdirs()
+        out.text = groovy.json.JsonOutput.prettyPrint(groovy.json.JsonOutput.toJson(manifest))
+    }
 }
 
 // ./gradlew connectorZip
@@ -38,8 +62,10 @@ tasks.register('connectorZip', Zip) {
         exclude 'dev/**'        // demo dApp + its node_modules — not part of the extension
         exclude 'README.md'     // repo-facing; the store listing carries the user-facing text
         exclude '**/.DS_Store'
+        exclude 'manifest.json' // the stamped copy below replaces it
     }
+    from(tasks.named('connectorManifest'))
 
-    archiveFileName = connectorVersion.map { "yano-connector-${it}.zip" }
+    archiveFileName = "yano-connector-${walletVersion}.zip"
     destinationDirectory = layout.buildDirectory.dir('dist')
 }
