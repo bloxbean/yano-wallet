@@ -20,6 +20,24 @@ This guide takes you from a GitHub release to a dApp connected to your wallet.
 
 ## 1. Pick a download
 
+### macOS: use Homebrew
+
+One command, and Homebrew clears the Gatekeeper quarantine flag for you — so
+none of the "unidentified developer" prompts below ever appear:
+
+```bash
+brew install --cask bloxbean/tap/yano-wallet        # native build — smallest, starts fastest
+brew install --cask bloxbean/tap/yano-wallet-jvm    # JVM build — installs into /Applications
+```
+
+Then **skip to step 3**. Upgrade later with `brew upgrade --cask yano-wallet`.
+
+Both casks need **Apple Silicon**; on an Intel Mac use the portable zip below.
+Install `yano-wallet-jvm` if the native build gives you trouble — it is the same
+wallet on a bundled Java runtime.
+
+### Everything else
+
 Everything is on the [Releases page](https://github.com/bloxbean/yano-wallet/releases).
 Each release carries several assets — you need **one wallet** plus **the browser
 connector** (only if you want dApps to talk to the wallet).
