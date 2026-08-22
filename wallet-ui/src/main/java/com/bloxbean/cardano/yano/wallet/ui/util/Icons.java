@@ -27,6 +27,9 @@ public final class Icons {
             + " 2-2h12M16 13h3";
     public static final String LOCK = "M7 11V7a5 5 0 0 1 10 0v4M5 11h14v10H5V11z";
     // Filled equalizer bars — reads as live activity/stats (must be solid, not stroked).
+    /** "i" in a circle. */
+    public static final String ABOUT = "M12 3a9 9 0 1 0 9 9 9 9 0 0 0-9-9zm0 4h.01M11 11h1v6h1";
+
     public static final String LIVE = "M4 13h3v7H4v-7z M10 8h3v12h-3V8z M16 3h3v17h-3V3z";
 
     public static Region icon(String svgPath, double size, String styleClass) {

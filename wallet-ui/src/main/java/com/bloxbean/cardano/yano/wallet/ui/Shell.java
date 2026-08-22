@@ -5,14 +5,13 @@ import com.bloxbean.cardano.yano.wallet.ui.screens.DashboardScreen;
 import com.bloxbean.cardano.yano.wallet.ui.screens.HistoryScreen;
 import com.bloxbean.cardano.yano.wallet.ui.screens.ReceiveScreen;
 import com.bloxbean.cardano.yano.wallet.ui.screens.SendScreen;
+import com.bloxbean.cardano.yano.wallet.ui.screens.AboutScreen;
 import com.bloxbean.cardano.yano.wallet.ui.screens.SettingsScreen;
 import com.bloxbean.cardano.yano.wallet.ui.screens.GovernanceScreen;
 import com.bloxbean.cardano.yano.wallet.ui.screens.ProposalsScreen;
 import com.bloxbean.cardano.yano.wallet.ui.screens.LiveScreen;
 import com.bloxbean.cardano.yano.wallet.ui.screens.StakingScreen;
-import com.bloxbean.cardano.yano.wallet.ui.live.LiveBlocksView;
 import com.bloxbean.cardano.yano.wallet.ui.live.LiveChainModel;
-import com.bloxbean.cardano.yano.wallet.ui.live.LivePrefs;
 import com.bloxbean.cardano.yano.wallet.ui.util.Icons;
 import com.bloxbean.cardano.yano.wallet.ui.util.Ui;
 import javafx.animation.KeyFrame;
@@ -64,7 +63,6 @@ public class Shell {
     private final Tooltip syncTooltip = new Tooltip();
     private final Timeline statusPoller;
     private final LiveChainModel liveModel = new LiveChainModel();
-    private LiveBlocksView ambient;
     private String active;
     // Delta tracking to tell "advancing" from "stalled" during catch-up without
     // any network-tip math: remember the highest block seen and when it last rose.
@@ -110,6 +108,9 @@ public class Shell {
         registry.put("Proposals", () -> new ProposalsScreen(controller, overlay));
         registry.put("Live", () -> new LiveScreen(controller, overlay, liveModel));
         registry.put("Settings", () -> new SettingsScreen(controller, overlay, this::changeNetwork));
+        // Takes no controller: build facts come from BuildInfo, generated at build
+        // time, so this screen works even when nothing else does.
+        registry.put("About", () -> new AboutScreen(overlay));
 
         statusPoller = new Timeline(new KeyFrame(Duration.seconds(5), e -> tick()));
         statusPoller.setCycleCount(Timeline.INDEFINITE);
@@ -119,14 +120,8 @@ public class Shell {
         BorderPane frame = new BorderPane();
         frame.getStyleClass().add("shell");
         frame.setLeft(buildSidebar());
-        // Ambient live-chain background sits behind every screen; screens have
-        // transparent gaps, so it shows through without touching their styling.
-        ambient = new LiveBlocksView(liveModel, true);
-        StackPane center = new StackPane(ambient, content);
-        frame.setCenter(center);
+        frame.setCenter(content);
         overlay.getChildren().add(frame);
-        syncAmbient();
-        LivePrefs.setOnChange(() -> javafx.application.Platform.runLater(this::syncAmbient));
         navigate("Dashboard");
         statusPoller.play();
         pollStatus();
@@ -135,27 +130,11 @@ public class Shell {
 
     public void dispose() {
         statusPoller.stop();
-        LivePrefs.setOnChange(null);
-        if (ambient != null) {
-            ambient.dispose();
-        }
     }
 
-    /** Reflect the ambient-background toggle: show/hide + start/stop the animation. */
-    private void syncAmbient() {
-        boolean on = LivePrefs.ambientEnabled();
-        if (ambient != null) {
-            ambient.setVisible(on);
-            ambient.setManaged(on);
-            ambient.setActive(on);
-        }
-        if (on) {
-            pollLiveChain();
-        }
-    }
-
+    /** The Live page is the only thing that consumes chain-tip data now. */
     private boolean liveNeeded() {
-        return LivePrefs.ambientEnabled() || "Live".equals(active);
+        return "Live".equals(active);
     }
 
     private void pollLiveChain() {
@@ -216,6 +195,7 @@ public class Shell {
         addNav(side, "Proposals", Icons.PROPOSALS);
         addNav(side, "Live", Icons.LIVE);
         addNav(side, "Settings", Icons.SETTINGS);
+        addNav(side, "About", Icons.ABOUT);
 
         Region grow = new Region();
         VBox.setVgrow(grow, Priority.ALWAYS);

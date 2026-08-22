@@ -2,7 +2,6 @@ package com.bloxbean.cardano.yano.wallet.ui.screens;
 
 import com.bloxbean.cardano.yano.wallet.ui.Shell;
 import com.bloxbean.cardano.yano.wallet.ui.contract.WalletUiController;
-import com.bloxbean.cardano.yano.wallet.ui.live.LivePrefs;
 import com.bloxbean.cardano.yano.wallet.ui.util.ThemeManager;
 import com.bloxbean.cardano.yano.wallet.ui.util.Ui;
 import javafx.application.Platform;
@@ -294,15 +293,9 @@ public class SettingsScreen implements Shell.Screen {
                         }
                     });
         });
-        CheckBox liveBackground = new CheckBox("Animated live-chain background");
-        liveBackground.setSelected(LivePrefs.ambientEnabled());
-        liveBackground.setOnAction(e -> LivePrefs.setAmbientEnabled(liveBackground.isSelected()));
         return Ui.card("Appearance",
                 Ui.muted("Color theme — applies instantly and is remembered."),
-                themePicker,
-                liveBackground,
-                Ui.muted("A subtle animation of live blocks behind the app. Opt-in; it pauses when the "
-                        + "window isn't focused. Open the Live page for the full view."));
+                themePicker);
     }
 
     private void loadNodeLog() {

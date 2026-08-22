@@ -99,7 +99,7 @@ public interface WalletUiController {
     String dataDir();
 
     /**
-     * Live chain-tip snapshot for the animated "Live" view / ambient background.
+     * Live chain-tip snapshot for the animated "Live" view.
      * Best-effort: returns {@link LiveChainView#unreachable()} rather than throwing
      * when the node is unavailable, so the visualization degrades quietly.
      */

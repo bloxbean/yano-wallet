@@ -22,13 +22,12 @@ import java.util.Map;
 /**
  * A Canvas that animates the chain tip as a train of block tiles sliding in from
  * the right — newest at the leading edge, older easing left, each tile brightening
- * with its transaction count. Reused in two modes: {@code ambient} (dim, behind
- * the shell content) and full (the dedicated Live page).
+ * with its transaction count.
  *
- * <p>Runs an {@link AnimationTimer} only while it is {@link #setActive active},
- * attached to a scene, AND its window is focused — so it costs nothing in the
- * background or when the feature is off. All listeners are removed on detach /
- * {@link #dispose}, so it does not leak across shell rebuilds.
+ * <p>The {@code ambient} mode (dim, mouse-transparent, drawn behind every
+ * screen) is no longer reachable: the wallet dropped the animated background
+ * setting it existed for. The flag is kept because unpicking it means editing
+ * the drawing code the Live page depends on, for no user-visible gain.
  */
 public final class LiveBlocksView extends Region {
     private static final double TILE_W = 104;    // full-mode block card (px)
@@ -76,7 +75,7 @@ public final class LiveBlocksView extends Region {
         sceneProperty().addListener((o, oldScene, newScene) -> onSceneChanged(newScene));
     }
 
-    /** External gate: the ambient toggle, or the Live page being on screen. */
+    /** External gate: whether the Live page is on screen. */
     public void setActive(boolean on) {
         if (on == active) {
             return;
