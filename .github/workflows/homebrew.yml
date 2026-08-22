@@ -1,0 +1,188 @@
+name: homebrew
+
+# Updates bloxbean/homebrew-tap so macOS users can install with one command
+# instead of choosing between nine release assets:
+#
+#   brew install --cask bloxbean/tap/yano-wallet        # native build
+#   brew install --cask bloxbean/tap/yano-wallet-jvm    # JVM build, real .app
+#
+# Worth more than convenience: `brew install --cask` strips
+# com.apple.quarantine, so the Gatekeeper prompts these unsigned builds trigger
+# never appear. Until the binaries are signed and notarised, this is the only
+# install path that does not ask a user to wave a security warning through.
+#
+# TWO casks on purpose. The native build is the flagship, but its Windows and
+# Linux binaries only started building this week and none has been through real
+# use, so a JVM fallback someone can reach without hunting the releases page is
+# cheap insurance.
+#
+# Runs after a tag build, waiting for the assets: they come from TWO workflows
+# (release.yml and native-release.yml) that finish at different times, so the
+# release exists long before it is complete.
+#
+# Requires the org-level HOMEBREW_TAP_TOKEN secret — GITHUB_TOKEN cannot push to
+# another repository.
+
+on:
+  push:
+    tags: ['v*']
+  workflow_dispatch:
+    inputs:
+      version:
+        description: 'Version to publish, without the leading v (e.g. 0.1.0-pre3)'
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+concurrency:
+  group: homebrew
+  cancel-in-progress: false
+
+jobs:
+  update-tap:
+    runs-on: ubuntu-latest
+    name: Update Homebrew casks
+    steps:
+      - name: Resolve version
+        id: ver
+        shell: bash
+        run: |
+          if [ -n "${{ inputs.version }}" ]; then V="${{ inputs.version }}"
+          else V="${GITHUB_REF_NAME#v}"; fi
+          echo "version=$V" >> "$GITHUB_OUTPUT"
+          echo "Publishing $V"
+
+      # native-release.yml takes far longer than release.yml, so the .dmg is
+      # usually there well before the native zip. Poll rather than guess at a
+      # sleep: a cask pointing at a half-uploaded release is worse than a late one.
+      - name: Wait for the release assets
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          ver="${{ steps.ver.outputs.version }}"
+          native="yano-wallet-native-macos_arm64_${ver}.zip"
+          dmg="yano-wallet-macos_arm64_${ver}.dmg"
+          for attempt in $(seq 1 60); do
+            assets=$(gh release view "v${ver}" --repo "$GITHUB_REPOSITORY" --json assets -q '.assets[].name' 2>/dev/null || true)
+            if grep -qx "$native" <<<"$assets" && grep -qx "$dmg" <<<"$assets"; then
+              echo "Both assets present after $attempt attempt(s)."
+              exit 0
+            fi
+            echo "attempt $attempt: waiting for $native and $dmg"
+            sleep 30
+          done
+          echo "::error::Timed out waiting for the release assets. Re-run this workflow manually once the release is complete."
+          exit 1
+
+      - name: Download and checksum
+        id: sums
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          ver="${{ steps.ver.outputs.version }}"
+          base="https://github.com/${GITHUB_REPOSITORY}/releases/download/v${ver}"
+          curl -fSL --retry 3 -o native.zip "${base}/yano-wallet-native-macos_arm64_${ver}.zip"
+          curl -fSL --retry 3 -o wallet.dmg  "${base}/yano-wallet-macos_arm64_${ver}.dmg"
+          echo "native=$(sha256sum native.zip | awk '{print $1}')" >> "$GITHUB_OUTPUT"
+          echo "dmg=$(sha256sum wallet.dmg | awk '{print $1}')"    >> "$GITHUB_OUTPUT"
+
+      - name: Checkout homebrew-tap
+        uses: actions/checkout@v4
+        with:
+          repository: bloxbean/homebrew-tap
+          token: ${{ secrets.HOMEBREW_TAP_TOKEN }}
+          path: tap
+
+      - name: Write the casks
+        shell: bash
+        run: |
+          set -euo pipefail
+          ver="${{ steps.ver.outputs.version }}"
+          mkdir -p tap/Casks
+
+          # NO zap stanza, deliberately. Homebrew convention is for zap to delete
+          # an app's data, and ~/.yano-wallet holds the encrypted wallet vaults —
+          # `brew uninstall --zap` would destroy keys whose only other copy is a
+          # recovery phrase on paper. Leaving the directory behind is the safe
+          # failure; deleting it is not recoverable.
+          cat > tap/Casks/yano-wallet.rb <<CASK
+          cask "yano-wallet" do
+            version "${ver}"
+            sha256 "${{ steps.sums.outputs.native }}"
+
+            url "https://github.com/bloxbean/yano-wallet/releases/download/v#{version}/yano-wallet-native-macos_arm64_#{version}.zip"
+            name "Yano Wallet"
+            desc "Full-node Cardano desktop wallet with a managed Yano node"
+            homepage "https://github.com/bloxbean/yano-wallet"
+
+            # The native build is compiled for Apple Silicon only; Intel Macs
+            # should install yano-wallet-jvm instead.
+            depends_on arch: :arm64
+
+            # run.sh resolves symlinks before locating yano-node/ beside itself,
+            # so linking it into the PATH works.
+            binary "yano-wallet-native-#{version}/run.sh", target: "yano-wallet"
+
+            caveats <<~EOS
+              Start the wallet with:
+                yano-wallet
+
+              The managed node downloads and validates the chain on first run,
+              which takes hours and tens of GB under ~/.yano-wallet/.
+
+              Uninstalling leaves ~/.yano-wallet/ in place: it holds your encrypted
+              wallet vaults. Remove it by hand only if you have your recovery phrase.
+            EOS
+          end
+          CASK
+
+          cat > tap/Casks/yano-wallet-jvm.rb <<CASK
+          cask "yano-wallet-jvm" do
+            version "${ver}"
+            sha256 "${{ steps.sums.outputs.dmg }}"
+
+            url "https://github.com/bloxbean/yano-wallet/releases/download/v#{version}/yano-wallet-macos_arm64_#{version}.dmg"
+            name "Yano Wallet (JVM build)"
+            desc "Full-node Cardano desktop wallet - JVM build with a bundled runtime"
+            homepage "https://github.com/bloxbean/yano-wallet"
+
+            # jpackage builds the .dmg on an Apple Silicon runner; there is no
+            # Intel installer to point at yet.
+            depends_on arch: :arm64
+
+            # Bundles its own JRE, so no Java is required despite being the JVM build.
+            app "Yano Wallet.app"
+
+            caveats <<~EOS
+              Installs to /Applications. This is the JVM build, bundling its own
+              Java runtime - use it if the native build misbehaves.
+
+              Uninstalling leaves ~/.yano-wallet/ in place: it holds your encrypted
+              wallet vaults. Remove it by hand only if you have your recovery phrase.
+            EOS
+          end
+          CASK
+
+          echo "--- yano-wallet.rb"; cat tap/Casks/yano-wallet.rb
+          echo "--- yano-wallet-jvm.rb"; cat tap/Casks/yano-wallet-jvm.rb
+
+      - name: Commit and push
+        working-directory: tap
+        shell: bash
+        run: |
+          set -euo pipefail
+          git config user.name  'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          if git diff --quiet -- Casks; then
+            echo "Casks already up to date."
+            exit 0
+          fi
+          git add Casks
+          git commit -m "yano-wallet ${{ steps.ver.outputs.version }}"
+          git push

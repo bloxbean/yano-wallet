@@ -30,6 +30,8 @@ come from a chain you validated yourself.
 - Argon2id-encrypted vault, optionally protected by a **FIDO2 security key**
 - A managed local node the wallet launches for you, or your own external node
 
+**macOS:** `brew install --cask bloxbean/tap/yano-wallet`
+
 **New here?** [GETTING-STARTED.md](GETTING-STARTED.md) is the user-facing guide:
 download a release, run the wallet, install the browser extension, and connect a
 dApp. It ships inside both the native and portable zips. The rest of this file
