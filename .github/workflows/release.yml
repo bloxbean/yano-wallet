@@ -3,7 +3,10 @@ name: release
 # Builds the Yano Wallet desktop app per OS and publishes two artifacts each:
 #   * a native installer with a bundled open-source JRE — no Java needed
 #     (dmg / msi / deb)
-#   * a portable "bring your own Java 25+" zip (jars + launch scripts)
+#
+# Plus ONE portable "bring your own Java 25+" zip (jars + launch scripts) for
+# every platform, built on a single runner: JavaFX for all platforms rides along
+# under lib/platform/ and run.sh/run.bat pick the matching set.
 #
 # Plus one OS-independent artifact built once, in its own job:
 #   * the browser extension zip (CIP-30 connector) — unzip, then Load unpacked
@@ -21,7 +24,7 @@ name: release
 # jpackage cannot cross-compile, so one runner per OS. The JDK is an OpenJDK
 # build (Temurin, GPLv2+CE) — never Oracle JDK — so the bundled runtime is freely
 # redistributable. JavaFX + hardware-wallet natives ride the app's classpath, so
-# each build is OS/arch-specific (both the installer and the portable zip).
+# each installer is OS/arch-specific. The portable zip is not — see above.
 
 on:
   push:
@@ -41,6 +44,7 @@ jobs:
             platform: macos-arm64
           - os: ubuntu-22.04       # x86_64
             platform: linux-x86_64
+            portable: true         # the one runner that builds the portable zip
           - os: ubuntu-22.04-arm   # aarch64
             platform: linux-arm64
           - os: windows-latest     # x86_64
@@ -108,14 +112,24 @@ jobs:
         run: ./gradlew fetchYanoNode --no-daemon
 
       # jpackage jlinks the bundled JRE from this Temurin JDK.
-      - name: Build installer + portable zip (${{ matrix.platform }})
+      - name: Build installer (${{ matrix.platform }})
         shell: bash
-        run: ./gradlew :wallet-app:jpackageInstaller :wallet-app:walletZip --no-daemon
+        run: ./gradlew :wallet-app:jpackageInstaller --no-daemon
 
-      # jpackage names the installer "Yano Wallet-<ver>.<ext>" and the zip carries
-      # the gradle version; rename both to yano-wallet-<os>_<arch>_<version> so the
-      # Releases page is unambiguous. Native extensions stay runnable/installable.
-      - name: Rename artifacts with os/arch/version
+      # ONE portable zip serves every platform — it carries JavaFX for all of
+      # them and run.sh/run.bat pick the matching set — so it is built on a
+      # single runner. Four runners producing near-identical archives only gave
+      # the release page four ways to ask the same question.
+      - name: Build the portable zip (all platforms)
+        if: matrix.portable
+        shell: bash
+        run: ./gradlew :wallet-app:walletZip --no-daemon
+
+      # jpackage names the installer "Yano Wallet-<ver>.<ext>"; rename it to
+      # yano-wallet-<os>_<arch>_<version> so the Releases page is unambiguous.
+      # Native extensions stay runnable/installable. The portable zip is already
+      # named by Gradle and has no os/arch, being one archive for all platforms.
+      - name: Rename installers with os/arch/version
         shell: bash
         run: |
           cd wallet-app/build/dist
@@ -124,10 +138,6 @@ jobs:
           shopt -s nullglob
           for f in *.dmg *.pkg *.msi *.exe *.deb *.rpm; do
             mv -v "$f" "yano-wallet-${osarch}_${ver}.${f##*.}"
-          done
-          for f in yano-wallet-*.zip; do
-            case "$f" in *_"${ver}"-portable.zip) continue;; esac
-            mv -v "$f" "yano-wallet-${osarch}_${ver}-portable.zip"
           done
           ls -la
 

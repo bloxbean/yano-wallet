@@ -6,8 +6,8 @@
 # Yano node is a native executable too. No Java, no JRE, no runtime.
 #
 # Usage:
-#   ./yano-wallet.sh                       # launch the wallet
-#   ./yano-wallet.sh --network=preprod ... # pass-through CLI options
+#   ./run.sh                       # launch the wallet
+#   ./run.sh --network=preprod ... # pass-through CLI options
 #
 # Environment:
 #   YANO_NODE_JAR   override the managed node binary (default: ./yano-node/yano)

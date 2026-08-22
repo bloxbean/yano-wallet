@@ -12,15 +12,15 @@ Requirements
 
 Run
 ---
-  macOS / Linux:   ./yano-wallet.sh
-  Windows:         yano-wallet.bat
+  macOS / Linux:   ./run.sh
+  Windows:         run.bat
 
   Extra options pass straight through, e.g.:
-      ./yano-wallet.sh --network=preprod
+      ./run.sh --network=preprod
 
 Layout
 ------
-  yano-wallet.sh / .bat   launcher scripts
+  run.sh / .bat   launcher scripts (they pick the JavaFX build for your OS)
   yano-node/              the bundled Yano node distribution (jar + config/)
   lib/                    the wallet app, JavaFX, and all dependencies
 
@@ -31,3 +31,7 @@ Notes
   * Wallet data lives in ~/.yano-wallet (override with --data-dir=<path>).
   * No Java, or an older Java? Use the native installer instead:
     Yano Wallet .dmg (macOS) / .msi (Windows) / .deb (Linux).
+
+One archive runs on every platform: lib/platform/ carries JavaFX for macOS
+(Intel and Apple Silicon), Windows and Linux (x86_64 and arm64), and the
+launcher puts only the matching set on the classpath.
