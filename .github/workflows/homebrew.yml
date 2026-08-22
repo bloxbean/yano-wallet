@@ -137,6 +137,9 @@ jobs:
               ("Apple could not verify..."). Clear it once, no re-download:
                 xattr -dr com.apple.quarantine "\$(brew --prefix)/Caskroom/yano-wallet"
 
+              Point it at the FOLDER, not the binary: the bundled Yano node is a
+              second executable and prompts separately. -r covers both.
+
               The managed node downloads and validates the chain on first run,
               which takes hours and tens of GB under ~/.yano-wallet/.
 
@@ -170,6 +173,9 @@ jobs:
               Installed WITHOUT --no-quarantine? macOS will refuse to open it
               ("Apple could not verify..."). Clear it once, no re-download:
                 xattr -dr com.apple.quarantine "/Applications/Yano Wallet.app"
+
+              Point it at the WHOLE bundle: the Yano node inside it is a second
+              executable and prompts separately. -r covers both.
 
               Uninstalling leaves ~/.yano-wallet/ in place: it holds your encrypted
               wallet vaults. Remove it by hand only if you have your recovery phrase.

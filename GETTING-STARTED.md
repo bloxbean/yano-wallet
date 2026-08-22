@@ -38,6 +38,10 @@ Already installed without it? Clear it once, no re-download needed:
 xattr -dr com.apple.quarantine "$(brew --prefix)/Caskroom/yano-wallet"
 ```
 
+Point it at the **folder**, not the binary. The wallet ships a bundled Yano node
+which is a second executable, and macOS prompts for each one separately; `-r`
+clears both in one go.
+
 Then **skip to step 3**. Upgrade later with `brew upgrade --cask yano-wallet`.
 
 Both casks need **Apple Silicon**; on an Intel Mac use the portable zip below.
