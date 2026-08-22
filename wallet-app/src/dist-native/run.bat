@@ -5,8 +5,8 @@ REM Needs NOTHING installed: the wallet is an AOT-compiled binary and the
 REM bundled Yano node is a native executable too. No Java, no JRE.
 REM
 REM Usage:
-REM   yano-wallet.bat                        launch the wallet
-REM   yano-wallet.bat --network=preprod ...  pass-through CLI options
+REM   run.bat                        launch the wallet
+REM   run.bat --network=preprod ...  pass-through CLI options
 REM
 REM Environment:
 REM   YANO_NODE_JAR  override the managed node binary (default .\yano-node\yano.exe)

@@ -292,9 +292,31 @@ tasks.register('jpackageInstaller', Exec) {
 }
 
 // Portable "bring your own Java" zip: the app + all deps under lib/, the node
+// ONE portable zip for every platform. JavaFX is the only platform-specific part
+// of the runtime classpath — hid4java and JNA each carry every platform's natives
+// inside a single jar, and the node jar is pure Java — so shipping all of them
+// costs ~8.5 MB per platform and removes three assets from the release page.
+//
+// They cannot all sit in lib/ together: the platform jars hold the SAME
+// javafx.scene.* classes with DIFFERENT bundled natives, so first-on-classpath
+// would win and load the wrong .dylib/.so, failing at startup with a native-load
+// error that names nothing useful. run.sh/run.bat pick the matching directory.
+def javafxPlatforms = ['mac-aarch64', 'mac', 'win', 'linux', 'linux-aarch64']
+def javafxConfigOf = { String platform -> 'javafxDist' + platform.replaceAll('-', '') }
+
+javafxPlatforms.each { platform ->
+    def cfg = configurations.create(javafxConfigOf(platform)) {
+        canBeConsumed = false
+        canBeResolved = true
+        transitive = false      // the classifier jars are self-contained
+    }
+    ['javafx-base', 'javafx-graphics', 'javafx-controls'].each { module ->
+        dependencies.add(cfg.name, "org.openjfx:${module}:${libs.versions.javafx.get()}:${platform}")
+    }
+}
+
 // jar, and launch scripts (src/dist/). No bundled JRE — the user runs it with
-// their own Java 25+. Per-OS like the installers, since JavaFX + hardware-wallet
-// natives on the runtime classpath are platform-specific.
+// their own Java 25+. ONE archive for every platform (see above).
 // ./gradlew :wallet-app:walletZip
 tasks.register('walletZip', Zip) {
     group = 'distribution'
@@ -303,7 +325,9 @@ tasks.register('walletZip', Zip) {
     if (bundleNode) {
         dependsOn ':fetchYanoNode'
     }
-    archiveFileName = "yano-wallet-${project.version}.zip"
+    // Named -portable at source: it is one archive for every platform, so unlike
+    // the installers there is no os/arch for the release workflow to stamp on.
+    archiveFileName = "yano-wallet-${project.version}-portable.zip"
     destinationDirectory = layout.buildDirectory.dir('dist')
     def distRoot = "yano-wallet-${project.version}"
     into(distRoot) {
@@ -313,8 +337,14 @@ tasks.register('walletZip', Zip) {
         from(rootProject.file('GETTING-STARTED.md'))
         from(rootProject.file('LICENSE'))
         into('lib') {
-            from configurations.runtimeClasspath
+            // Platform JavaFX goes to lib/platform/<id>/ below, not here.
+            from configurations.runtimeClasspath.filter { !(it.name ==~ /javafx-.*\.jar/) }
             from tasks.named('jar')
+        }
+        javafxPlatforms.each { platform ->
+            into("lib/platform/${platform}") {
+                from configurations.getByName(javafxConfigOf(platform))
+            }
         }
         if (bundleNode) {
             // The full node distribution under yano-node/ (matches the
@@ -324,11 +354,11 @@ tasks.register('walletZip', Zip) {
             }
         }
         from('src/dist') {
-            include 'yano-wallet.sh'
+            include 'run.sh'
             filePermissions { unix('755') }
         }
         from('src/dist') {
-            include 'yano-wallet.bat', 'README.txt'
+            include 'run.bat', 'README.txt'
         }
     }
 }

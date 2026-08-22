@@ -1,5 +1,7 @@
 @echo off
 rem Yano Wallet launcher - portable "bring your own Java" distribution.
+rem JavaFX for every platform ships under lib\platform\; only the matching set
+rem may go on the classpath (same classes, different natives), so this picks win.
 rem Requires a Java 25+ runtime on PATH (or set JAVA_HOME). The managed node runs
 rem under the same Java, so a full JDK/JRE 25 is needed. No Java? Use the .msi,
 rem which bundles its own runtime.
@@ -15,7 +17,7 @@ if defined JAVA_HOME (
 "%JAVA%" %JAVA_OPTS% ^
     --enable-native-access=ALL-UNNAMED ^
     -Dyano.node.jar="%DIR%yano-node\yano.jar" ^
-    -cp "%DIR%lib\*" ^
+    -cp "%DIR%lib\*;%DIR%lib\platform\win\*" ^
     com.bloxbean.cardano.yano.wallet.app.YanoWalletApp %*
 
 endlocal

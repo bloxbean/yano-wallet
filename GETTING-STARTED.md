@@ -24,12 +24,17 @@ Everything is on the [Releases page](https://github.com/bloxbean/yano-wallet/rel
 Each release carries several assets — you need **one wallet** plus **the browser
 connector** (only if you want dApps to talk to the wallet).
 
-| you want | download | needs Java? |
-|---|---|---|
-| the simplest thing | `yano-wallet-native-<os>_<arch>_<version>.zip` | **no** |
-| a normal installer | `yano-wallet-<os>_<arch>_<version>.dmg` / `.msi` / `.deb` | **no** |
-| smallest download, you already have Java 25 | `yano-wallet-<os>_<arch>_<version>-portable.zip` | **yes — Java 25+** |
-| dApp support (any of the above) | `yano-connector-<version>.zip` | no |
+| you want | download | size | needs Java? |
+|---|---|---|---|
+| **the simplest thing** — unzip and run | `yano-wallet-native-<os>_<arch>_<version>.zip` | ~160 MB | **no** |
+| a normal installer, in Applications / Start Menu | `yano-wallet-<os>_<arch>_<version>.dmg` / `.msi` / `.deb` | ~340 MB | **no** |
+| you already run Java 25, or your platform has no native build | `yano-wallet-<version>-portable.zip` | ~325 MB | **yes — JDK 25+** |
+| dApp support (add to any of the above) | `yano-connector-<version>.zip` | small | no |
+
+The portable zip has **no `<os>_<arch>`** — one archive runs everywhere. It is
+not the smallest download: the native zip is half its size and needs no Java.
+Reach for portable when you want the JVM build, or on **Linux arm64**, which has
+no native build.
 
 Pick the `<os>_<arch>` matching your machine:
 
@@ -39,11 +44,13 @@ Pick the `<os>_<arch>` matching your machine:
 | Linux, Intel/AMD 64-bit | `linux_x86_64` |
 | Windows 64-bit | `windows_x86_64` |
 | Linux, ARM 64-bit | `linux_arm64` — installer or portable zip only, no native build |
+| Mac (Intel) | installer or portable zip only, no native build |
 
 > **Native vs portable.** The *native* zip is an ahead-of-time compiled build
-> that needs nothing installed — no Java, no runtime. The *portable* zip is
-> smaller but runs on a **Java 25+** runtime you provide, and the wallet's
-> local node runs under that same Java, so a complete JDK/JRE 25 is required.
+> that needs nothing installed — no Java, no runtime, and it is the smallest of
+> the three. The *portable* zip runs on a **Java 25+** runtime you provide, and
+> the wallet's local node runs under that same Java, so a complete JDK/JRE 25 is
+> required.
 
 ---
 
@@ -52,18 +59,18 @@ Pick the `<os>_<arch>` matching your machine:
 ### Native zip
 
 ```bash
-unzip yano-wallet-native-macos_arm64-<version>.zip
+unzip yano-wallet-native-macos_arm64_<version>.zip
 cd yano-wallet-native-<version>
-./yano-wallet.sh          # Windows: yano-wallet.bat
+./run.sh                  # Windows: run.bat
 ```
 
 ### Portable (bring-your-own-Java) zip
 
 ```bash
 java -version             # must be 25 or newer
-unzip yano-wallet-macos_arm64_<version>-portable.zip
+unzip yano-wallet-<version>-portable.zip
 cd yano-wallet-<version>
-./yano-wallet.sh          # Windows: yano-wallet.bat
+./run.sh                  # Windows: run.bat
 ```
 
 ### Installer
@@ -81,10 +88,12 @@ These builds are **not yet code-signed**, so the first launch is blocked:
   ```bash
   xattr -dr com.apple.quarantine yano-wallet-native-<version>
   ```
+  One command covers the whole folder — it clears both the wallet binary and
+  the bundled node, which would otherwise prompt separately.
 - **Windows** — SmartScreen shows *"Windows protected your PC"*. Click
   **More info** → **Run anyway**.
 - **Linux** — if the launcher is not executable:
-  `chmod +x yano-wallet.sh yano-wallet yano-node/yano`
+  `chmod +x run.sh yano-wallet yano-node/yano`
 
 ---
 

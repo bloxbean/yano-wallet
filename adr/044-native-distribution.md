@@ -276,7 +276,7 @@ require otherwise.
 
 ```
 yano-wallet-native-<ver>.zip
-├── yano-wallet.sh / .bat   launchers (resolve symlinks; point at the bundled node)
+├── run.sh / .bat   launchers (resolve symlinks; point at the bundled node)
 ├── yano-wallet             102 MB AOT binary
 └── yano-node/              native Yano + config/network/
 ```
