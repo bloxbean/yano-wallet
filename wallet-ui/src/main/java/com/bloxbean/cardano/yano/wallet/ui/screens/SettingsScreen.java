@@ -1,10 +1,12 @@
 package com.bloxbean.cardano.yano.wallet.ui.screens;
 
+import com.bloxbean.cardano.yano.wallet.ui.BuildInfo;
 import com.bloxbean.cardano.yano.wallet.ui.Shell;
 import com.bloxbean.cardano.yano.wallet.ui.contract.WalletUiController;
 import com.bloxbean.cardano.yano.wallet.ui.live.LivePrefs;
 import com.bloxbean.cardano.yano.wallet.ui.util.ThemeManager;
 import com.bloxbean.cardano.yano.wallet.ui.util.Ui;
+import javafx.animation.PauseTransition;
 import javafx.application.Platform;
 import javafx.geometry.Insets;
 import javafx.geometry.Pos;
@@ -22,7 +24,10 @@ import javafx.scene.control.ToggleGroup;
 import javafx.scene.layout.HBox;
 import javafx.scene.control.TextField;
 import javafx.scene.layout.StackPane;
+import javafx.scene.input.Clipboard;
+import javafx.scene.input.ClipboardContent;
 import javafx.scene.layout.VBox;
+import javafx.util.Duration;
 
 import java.util.Arrays;
 import java.util.List;
@@ -139,7 +144,7 @@ public class SettingsScreen implements Shell.Screen {
         VBox advancedCard = Ui.card("Managed node", relaysPane, filesPane);
 
         VBox column = new VBox(16, title, appearanceCard(), nodeCard, walletCard, securityCard,
-                dappsCard, connectorCard, advancedCard);
+                dappsCard, connectorCard, advancedCard, aboutCard());
         column.setPadding(new Insets(24));
         column.setMaxWidth(860);
         ScrollPane scroll = new ScrollPane(column);
@@ -276,6 +281,59 @@ public class SettingsScreen implements Shell.Screen {
         loadNodeLog();
         loadDapps();
         loadSecurityKey();
+    }
+
+    /**
+     * Versions, and a one-click copy of them. The first question on any bug
+     * report is "which build?", and a user cannot answer it from a window title
+     * or a binary that reports nothing. BuildInfo is generated from
+     * gradle.properties at build time, so this cannot drift from the release.
+     */
+    private VBox aboutCard() {
+        Label version = new Label("Yano Wallet " + BuildInfo.WALLET_VERSION);
+        version.getStyleClass().add("mono");
+
+        Label node = new Label("Managed node: Yano " + BuildInfo.NODE_VERSION);
+        node.getStyleClass().add("mono");
+
+        Label runtime = new Label("Runtime: " + runtimeDescription());
+        runtime.getStyleClass().add("mono");
+
+        Button copy = new Button("Copy version details");
+        copy.getStyleClass().add("ghost-button");
+        copy.setOnAction(e -> {
+            ClipboardContent content = new ClipboardContent();
+            content.putString(versionReport());
+            Clipboard.getSystemClipboard().setContent(content);
+            copy.setText("Copied");
+            PauseTransition reset = new PauseTransition(Duration.seconds(1.5));
+            reset.setOnFinished(done -> copy.setText("Copy version details"));
+            reset.play();
+        });
+
+        return Ui.card("About", version, node, runtime,
+                Ui.muted("Paste these details into a bug report — they identify the exact "
+                        + "build, which the wallet cannot infer from anything else."),
+                copy);
+    }
+
+    /**
+     * Native images have no JVM to report, and saying "Java 25" there would be a
+     * lie that sends a bug report down the wrong path.
+     */
+    private static String runtimeDescription() {
+        if (System.getProperty("org.graalvm.nativeimage.imagecode") != null) {
+            return "native image (no JVM)";
+        }
+        return "Java " + Runtime.version().feature() + " (" + System.getProperty("java.vendor") + ")";
+    }
+
+    private static String versionReport() {
+        return "Yano Wallet " + BuildInfo.WALLET_VERSION
+                + "\nManaged node: Yano " + BuildInfo.NODE_VERSION
+                + "\nRuntime: " + runtimeDescription()
+                + "\nOS: " + System.getProperty("os.name") + " " + System.getProperty("os.version")
+                + " (" + System.getProperty("os.arch") + ")";
     }
 
     private VBox appearanceCard() {
