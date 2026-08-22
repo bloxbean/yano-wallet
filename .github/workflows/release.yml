@@ -145,6 +145,16 @@ jobs:
         if: startsWith(github.ref, 'refs/tags/')
         uses: softprops/action-gh-release@v2
         with:
+          # A tag with a suffix (v0.1.0-pre4) is a pre-release; a bare v0.1.0 is
+          # not. This only labels it.
+          prerelease: ${{ contains(github.ref_name, '-') }}
+          # Never move "Latest" automatically. GitHub points the repository's
+          # front page and every "download the latest" link at whatever it marks
+          # latest, and a build that CI has only compiled has not been opened by
+          # anyone. Promoting is the maintainer's call, after a sanity check —
+          # one click in the Releases UI, or:
+          #   gh release edit v<version> --latest
+          make_latest: 'false'
           files: |
             wallet-app/build/dist/*.dmg
             wallet-app/build/dist/*.pkg
@@ -185,5 +195,15 @@ jobs:
         if: startsWith(github.ref, 'refs/tags/')
         uses: softprops/action-gh-release@v2
         with:
+          # A tag with a suffix (v0.1.0-pre4) is a pre-release; a bare v0.1.0 is
+          # not. This only labels it.
+          prerelease: ${{ contains(github.ref_name, '-') }}
+          # Never move "Latest" automatically. GitHub points the repository's
+          # front page and every "download the latest" link at whatever it marks
+          # latest, and a build that CI has only compiled has not been opened by
+          # anyone. Promoting is the maintainer's call, after a sanity check —
+          # one click in the Releases UI, or:
+          #   gh release edit v<version> --latest
+          make_latest: 'false'
           files: build/dist/yano-connector-*.zip
           fail_on_unmatched_files: true
