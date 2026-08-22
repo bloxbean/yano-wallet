@@ -179,10 +179,15 @@ jobs:
           set -euo pipefail
           git config user.name  'github-actions[bot]'
           git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
-          if git diff --quiet -- Casks; then
+          # Stage BEFORE testing for changes. `git diff` only compares tracked
+          # files, so on the first run — when Casks/ does not exist in the tap yet
+          # — it reported no change, this step exited 0, and the job passed while
+          # publishing nothing. Comparing the index catches new files too.
+          git add -A Casks
+          if git diff --cached --quiet -- Casks; then
             echo "Casks already up to date."
             exit 0
           fi
-          git add Casks
           git commit -m "yano-wallet ${{ steps.ver.outputs.version }}"
           git push
+          echo "Pushed:"; git show --stat --oneline HEAD | head -5
