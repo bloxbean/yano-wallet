@@ -6,10 +6,10 @@ name: homebrew
 #   brew install --cask bloxbean/tap/yano-wallet        # native build
 #   brew install --cask bloxbean/tap/yano-wallet-jvm    # JVM build, real .app
 #
-# Worth more than convenience: `brew install --cask` strips
-# com.apple.quarantine, so the Gatekeeper prompts these unsigned builds trigger
-# never appear. Until the binaries are signed and notarised, this is the only
-# install path that does not ask a user to wave a security warning through.
+# Homebrew ADDS com.apple.quarantine by default — it does not strip it — so the
+# install line has to carry --no-quarantine or macOS refuses to run these
+# unsigned builds until the user approves them under Privacy & Security. Both
+# casks say so in caveats. Signing and notarising is what removes the need.
 #
 # TWO casks on purpose. The native build is the flagship, but its Windows and
 # Linux binaries only started building this week and none has been through real
@@ -133,6 +133,10 @@ jobs:
               Start the wallet with:
                 yano-wallet
 
+              Installed WITHOUT --no-quarantine? macOS will refuse to run it
+              ("Apple could not verify..."). Clear it once, no re-download:
+                xattr -dr com.apple.quarantine "\$(brew --prefix)/Caskroom/yano-wallet"
+
               The managed node downloads and validates the chain on first run,
               which takes hours and tens of GB under ~/.yano-wallet/.
 
@@ -162,6 +166,10 @@ jobs:
             caveats <<~EOS
               Installs to /Applications. This is the JVM build, bundling its own
               Java runtime - use it if the native build misbehaves.
+
+              Installed WITHOUT --no-quarantine? macOS will refuse to open it
+              ("Apple could not verify..."). Clear it once, no re-download:
+                xattr -dr com.apple.quarantine "/Applications/Yano Wallet.app"
 
               Uninstalling leaves ~/.yano-wallet/ in place: it holds your encrypted
               wallet vaults. Remove it by hand only if you have your recovery phrase.

@@ -22,12 +22,20 @@ This guide takes you from a GitHub release to a dApp connected to your wallet.
 
 ### macOS: use Homebrew
 
-One command, and Homebrew clears the Gatekeeper quarantine flag for you — so
-none of the "unidentified developer" prompts below ever appear:
+```bash
+brew install --cask --no-quarantine bloxbean/tap/yano-wallet        # native build — smallest, starts fastest
+brew install --cask --no-quarantine bloxbean/tap/yano-wallet-jvm    # JVM build — installs into /Applications
+```
+
+**`--no-quarantine` matters.** Homebrew *adds* the quarantine flag by default, so
+without it macOS says *"Apple could not verify 'yano-wallet' is free of malware"*
+and you have to approve the app under System Settings → Privacy & Security. The
+flag skips that, because these builds are not yet signed and notarised.
+
+Already installed without it? Clear it once, no re-download needed:
 
 ```bash
-brew install --cask bloxbean/tap/yano-wallet        # native build — smallest, starts fastest
-brew install --cask bloxbean/tap/yano-wallet-jvm    # JVM build — installs into /Applications
+xattr -dr com.apple.quarantine "$(brew --prefix)/Caskroom/yano-wallet"
 ```
 
 Then **skip to step 3**. Upgrade later with `brew upgrade --cask yano-wallet`.
