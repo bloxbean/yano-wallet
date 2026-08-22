@@ -23,24 +23,23 @@ This guide takes you from a GitHub release to a dApp connected to your wallet.
 ### macOS: use Homebrew
 
 ```bash
-brew install --cask --no-quarantine bloxbean/tap/yano-wallet        # native build — smallest, starts fastest
-brew install --cask --no-quarantine bloxbean/tap/yano-wallet-jvm    # JVM build — installs into /Applications
+brew install --cask bloxbean/tap/yano-wallet        # native build — smallest, starts fastest
+brew install --cask bloxbean/tap/yano-wallet-jvm    # JVM build — installs into /Applications
 ```
 
-**`--no-quarantine` matters.** Homebrew *adds* the quarantine flag by default, so
-without it macOS says *"Apple could not verify 'yano-wallet' is free of malware"*
-and you have to approve the app under System Settings → Privacy & Security. The
-flag skips that, because these builds are not yet signed and notarised.
+These builds are not signed or notarised yet, so macOS would normally refuse to
+run them — *"Apple could not verify 'yano-wallet' is free of malware"*. The casks
+clear that flag for you, on upgrades as well as installs, so there is nothing to
+approve under System Settings.
 
-Already installed without it? Clear it once, no re-download needed:
+If macOS still blocks it, clear it by hand once — no re-download needed:
 
 ```bash
 xattr -dr com.apple.quarantine "$(brew --prefix)/Caskroom/yano-wallet"
 ```
 
-Point it at the **folder**, not the binary. The wallet ships a bundled Yano node
-which is a second executable, and macOS prompts for each one separately; `-r`
-clears both in one go.
+Point it at the **folder**, not the binary: the bundled Yano node is a second
+executable and prompts separately; `-r` covers both.
 
 Then **skip to step 3**. Upgrade later with `brew upgrade --cask yano-wallet`.
 
