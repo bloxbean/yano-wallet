@@ -16,23 +16,41 @@ successful balance. For unusually large accounts, increase the JVM property
 `JAVA_TOOL_OPTIONS=-Dyano.wallet.scan.max-addresses-per-chain=20000`) and retry.
 This restarts discovery with the larger bound; it does not persist a scan cursor.
 
-## Node requirements
+## Nodes without address history
 
-The node must serve address transaction history. Empty history must be a definite
-answer, not an unavailable or disabled index. Yano's `404`, `503`, other history
-errors, malformed responses, and failed UTxO pages now fail the balance refresh.
-The dashboard displays the failure, including on periodic refreshes, instead of
-showing a partial or stale total. Enable the address-history index on a node
-version that supports it before retrying; older releases without that endpoint
-cannot perform reliable gap discovery. Blockfrost-style stores' address-not-found
-`404` is treated as unused, per their endpoint convention.
+The pinned Yano `0.1.0-pre13` distribution does not serve address transaction
+history. Its `404` is different from a definite empty history result. A missing
+Yano route, or a `503` explicitly identifying a disabled address-history index,
+uses bounded UTxO-only recovery instead of failing the balance screen.
+
+Recovery scans indices **0–199 on both chains** by default, without stopping at
+empty-address gaps. The dashboard calls this **Known balance — scan incomplete**
+and displays the exact scanned ranges. More funds may exist outside those ranges;
+without history, no gap-based algorithm can establish completeness. A range can
+extend further if history becomes unavailable after discovery has already advanced.
+Each refresh retries history, so restoring the endpoint restores normal gap scans.
+
+For a deeper recovery scan, launch with:
+
+```bash
+JAVA_TOOL_OPTIONS=-Dyano.wallet.scan.historyless-addresses-per-chain=1000 ./gradlew :wallet-app:run
+```
+
+The general 10,000-address safety ceiling still applies. Wider recovery windows
+make more node requests and take longer; dashboard refreshes do not overlap.
+Transport errors, generic server errors, malformed responses, and failed UTxO pages
+still fail the refresh. Blockfrost-style stores' address-not-found `404` is treated
+as unused, per their endpoint convention. Account-profile discovery still requires
+history; UTxO-only recovery applies to addresses within an already opened account.
 
 ## Payments and scope
 
 Software ADA/native-asset payments use the same discovery result to enumerate
 funded addresses. Signing preserves the full derivation path, including the change
 role, and returns change to the existing primary receive address. Transaction
-previews include the discovered payment credentials in wallet ownership.
+previews include the discovered payment credentials in wallet ownership. An
+incomplete recovery scan makes the preview unchecked, since a partial ownership
+set must not be used to assert a complete value difference.
 
 This change covers Shelley **base** addresses. Byron recovery is intentionally
 out of scope. Enterprise-address discovery, hardware payments, the existing primary-address-only

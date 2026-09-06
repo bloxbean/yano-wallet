@@ -947,7 +947,7 @@ public class DefaultWalletUiController implements WalletUiController {
                     balance.addressCount(),
                     balance.assets().stream()
                             .map(asset -> new AssetItem(asset.unit(), asset.quantity().toString()))
-                            .toList());
+                            .toList(), balance.scanWarning());
         });
     }
 

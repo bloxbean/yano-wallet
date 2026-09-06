@@ -24,6 +24,8 @@ public class DashboardScreen implements Shell.Screen {
     private final Consumer<String> navigate;
 
     private final Label walletName = new Label();
+    private boolean balanceLoading;
+    private final Label balanceTitle = Ui.muted("Total balance");
     private final Label balanceAda = new Label("—");
     private final Label balanceDetail = new Label("");
     private final VBox assetsBox = new VBox(8);
@@ -51,7 +53,7 @@ public class DashboardScreen implements Shell.Screen {
         receive.setOnAction(e -> navigate.accept("Receive"));
         HBox actions = Ui.row(10, send, receive);
 
-        VBox hero = new VBox(6, Ui.muted("Total balance"), balanceAda, balanceDetail, actions);
+        VBox hero = new VBox(6, balanceTitle, balanceAda, balanceDetail, actions);
         hero.getStyleClass().addAll("card", "hero-card");
         hero.setSpacing(10);
 
@@ -91,29 +93,36 @@ public class DashboardScreen implements Shell.Screen {
         WalletUiController.WalletItem wallet = controller.activeWallet();
         walletName.setText(wallet != null ? wallet.name() : "");
 
-        Ui.onFx(controller.balance(), balance -> {
-            balanceAda.setText("₳ " + balance.ada());
-            balanceDetail.setText(balance.utxoCount() + " UTXOs · "
-                    + balance.addressesScanned() + " addresses scanned");
-            assetsBox.getChildren().clear();
-            if (balance.assets().isEmpty()) {
-                assetsBox.getChildren().add(Ui.muted("No native assets"));
-            } else {
-                balance.assets().forEach(asset -> {
-                    Label unit = new Label(Ui.middleEllipsis(asset.unit(), 14));
-                    unit.getStyleClass().add("mono");
-                    Label qty = new Label(asset.quantity());
-                    assetsBox.getChildren().add(Ui.row(10, unit, Ui.spacer(), qty));
-                });
-            }
-        }, error -> {
-            balanceAda.setText("—");
-            balanceDetail.setText("Balance unavailable: " + error.getMessage());
-            assetsBox.getChildren().setAll(Ui.muted("Assets unavailable until balance refresh succeeds"));
-            if (!silent) {
-                Ui.toast(overlay, "Balance failed: " + error.getMessage(), true);
-            }
-        });
+        if (!balanceLoading) {
+            balanceLoading = true;
+            Ui.onFx(controller.balance(), balance -> {
+                balanceLoading = false;
+                balanceTitle.setText(balance.scanWarning() == null ? "Total balance" : "Known balance — scan incomplete");
+                balanceAda.setText("₳ " + balance.ada());
+                balanceDetail.setText(balance.utxoCount() + " UTXOs · "
+                        + balance.addressesScanned() + " addresses scanned"
+                        + (balance.scanWarning() == null ? "" : "\n" + balance.scanWarning()));
+                assetsBox.getChildren().clear();
+                if (balance.assets().isEmpty()) {
+                    assetsBox.getChildren().add(Ui.muted("No native assets"));
+                } else {
+                    balance.assets().forEach(asset -> {
+                        Label unit = new Label(Ui.middleEllipsis(asset.unit(), 14));
+                        unit.getStyleClass().add("mono");
+                        Label qty = new Label(asset.quantity());
+                        assetsBox.getChildren().add(Ui.row(10, unit, Ui.spacer(), qty));
+                    });
+                }
+            }, error -> {
+                balanceLoading = false;
+                balanceAda.setText("—");
+                balanceDetail.setText("Balance unavailable: " + error.getMessage());
+                assetsBox.getChildren().setAll(Ui.muted("Assets unavailable until balance refresh succeeds"));
+                if (!silent) {
+                    Ui.toast(overlay, "Balance failed: " + error.getMessage(), true);
+                }
+            });
+        }
 
         Ui.onFx(controller.history(1, 5), history -> {
             activityBox.getChildren().clear();

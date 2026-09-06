@@ -464,7 +464,11 @@ public interface WalletUiController {
     }
 
     record BalanceView(String ada, String lovelace, int utxoCount, int addressesScanned,
-                       List<AssetItem> assets) {
+                       List<AssetItem> assets, String scanWarning) {
+        public BalanceView(String ada, String lovelace, int utxoCount, int addressesScanned,
+                           List<AssetItem> assets) {
+            this(ada, lovelace, utxoCount, addressesScanned, assets, null);
+        }
     }
 
     record AddressItem(int index, String address, String derivationPath) {

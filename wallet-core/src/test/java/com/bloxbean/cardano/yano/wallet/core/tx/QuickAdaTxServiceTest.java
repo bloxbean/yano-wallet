@@ -111,7 +111,25 @@ class QuickAdaTxServiceTest {
         }
     }
 
+    @Test
+    void canDraftPaymentFromKnownChangeFundsWithoutHistory() throws Exception {
+        Wallet sender = Wallet.createFromMnemonic(Networks.mainnet(), MNEMONIC);
+        var internal = com.bloxbean.cardano.yano.wallet.core.wallet.WalletAddresses.account(sender, 1, 24);
+        var draft = new QuickAdaTxService().buildSignedDraft(sender,
+                singleUtxoSupplier(internal.baseAddress(), true), this::protocolParams,
+                new NoopTransactionProcessor(), Wallet.create(Networks.mainnet()).getBaseAddressString(0),
+                BigInteger.valueOf(1_000_000));
+        var tx = Transaction.deserialize(HexUtil.decodeHexString(draft.cborHex()));
+        assertThat(tx.getWitnessSet().getVkeyWitnesses()).hasSize(1);
+        assertThat(tx.getWitnessSet().getVkeyWitnesses().getFirst().getVkey())
+                .containsExactly(internal.publicKeyBytes());
+    }
+
     private UtxoSupplier singleUtxoSupplier(String address) {
+        return singleUtxoSupplier(address, false);
+    }
+
+    private UtxoSupplier singleUtxoSupplier(String address, boolean historyUnsupported) {
         return new UtxoSupplier() {
             @Override
             public List<Utxo> getPage(String queryAddress, Integer nrOfItems, Integer page, OrderEnum order) {
@@ -133,6 +151,8 @@ class QuickAdaTxServiceTest {
 
             @Override
             public boolean isUsedAddress(Address candidate) {
+                if (historyUnsupported) throw new com.bloxbean.cardano.yano.wallet.core.service.HistoryPort
+                        .HistoryNotSupportedException("No history endpoint");
                 return address.equals(candidate.toBech32());
             }
         };

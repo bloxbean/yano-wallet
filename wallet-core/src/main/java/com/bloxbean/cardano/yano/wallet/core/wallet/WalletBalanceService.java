@@ -44,7 +44,7 @@ public class WalletBalanceService {
                 .sorted(Comparator.comparing(Map.Entry::getKey))
                 .map(entry -> new WalletAssetBalance(entry.getKey(), entry.getValue()))
                 .toList();
-        return new WalletBalance(total, scan.addressCount(), walletUtxos.size(), walletUtxos, assetBalances);
+        return new WalletBalance(total, scan.addressCount(), walletUtxos.size(), walletUtxos, assetBalances, scan.warning());
     }
 
     private BigInteger lovelace(Utxo utxo) {

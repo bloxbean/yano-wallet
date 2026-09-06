@@ -337,13 +337,29 @@ public class YanoNodeClient {
         return root == null ? null : parseAddressTxs(root);
     }
 
-    /** Strict discovery lookup: an unavailable index must never look like an unused address. */
+    /** Distinguishes unused addresses, absent/disabled history, and failed history requests. */
     public boolean isAddressUsed(String address) {
         String path = "addresses/" + address + "/transactions?page=1&count=1&order=asc";
         RawResponse response = getRaw(path, requestTimeout);
         // Blockfrost-compatible stores return 404 for a never-used address.
         // Yano returns [] for that case; its 404 means the route is missing.
         if (blockfrostFlavor && response.status() == 404) return false;
+        if (!blockfrostFlavor && response.status() == 404) {
+            throw new com.bloxbean.cardano.yano.wallet.core.service.HistoryPort.HistoryNotSupportedException(
+                    "Address history unavailable: this node does not serve the history endpoint (HTTP 404)");
+        }
+        if (!blockfrostFlavor && response.status() == 503) {
+            try {
+                JsonNode errorBody = objectMapper.readTree(response.body());
+                String error = errorBody == null ? "" : errorBody.path("error").asText("").toLowerCase(Locale.ROOT);
+                if (error.contains("address") && (error.contains("disabled") || error.contains("not selected"))) {
+                    throw new com.bloxbean.cardano.yano.wallet.core.service.HistoryPort.HistoryNotSupportedException(
+                            "Address history unavailable: the node's address history index is disabled");
+                }
+            } catch (IOException e) {
+                throw new NodeClientException("Unreadable address history error response", e);
+            }
+        }
         if (response.status() != 200) {
             throw new NodeClientException("Address history unavailable (HTTP " + response.status()
                     + "). Enable address transaction history on the node and retry.");

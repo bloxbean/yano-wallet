@@ -169,6 +169,44 @@ class YanoNodeBackendTest {
     }
 
     @Test
+    void missingHistoryRouteStillReturnsExplicitlyPartialBalanceFromUtxoEndpoints() {
+        var wallet = com.bloxbean.cardano.hdwallet.Wallet.create(
+                com.bloxbean.cardano.client.common.model.Networks.mainnet());
+        for (int role = 0; role <= 1; role++) {
+            for (int index = 0; index < 4; index++) {
+                String address = com.bloxbean.cardano.yano.wallet.core.wallet.WalletAddresses
+                        .baseAddress(wallet, role, index).toBech32();
+                boolean funded = role == 1 && index == 3;
+                stub.on("/api/v1/addresses/" + address + "/utxos", req ->
+                        funded && req.path().contains("page=1")
+                                ? StubYanoNode.Response.json(UTXOS_PAGE_1.replace(ADDRESS, address))
+                                : StubYanoNode.Response.json("[]"));
+            }
+        }
+        var backend = YanoNodeBackend.connect(WalletNetwork.MAINNET, stub.baseUrl());
+        var balance = new com.bloxbean.cardano.yano.wallet.core.wallet.WalletBalanceService()
+                .scan(wallet, backend.utxoSupplier(), 2, 4);
+        assertThat(balance.complete()).isFalse();
+        assertThat(balance.utxoCount()).isEqualTo(2);
+        assertThat(balance.lovelace()).isEqualTo(new BigInteger("5001500000"));
+        assertThat(balance.addressCount()).isEqualTo(8);
+        assertThat(stub.requests().stream().filter(req -> req.path().contains("/transactions"))).hasSize(1);
+    }
+
+    @Test
+    void explicitlyDisabledIndexIsDistinguishedFromServerFailure() {
+        String path = "/api/v1/addresses/" + ADDRESS + "/transactions";
+        var client = new YanoNodeClient(stub.baseUrl());
+        stub.on(path, req -> new StubYanoNode.Response(503, "application/json",
+                "{\"error\":\"Address transaction history is unavailable or not selected\"}"));
+        assertThatThrownBy(() -> client.isAddressUsed(ADDRESS))
+                .isInstanceOf(com.bloxbean.cardano.yano.wallet.core.service.HistoryPort.HistoryNotSupportedException.class);
+        stub.on(path, req -> new StubYanoNode.Response(503, "application/json",
+                "{\"error\":\"Address history read failed\"}"));
+        assertThatThrownBy(() -> client.isAddressUsed(ADDRESS)).isInstanceOf(NodeClientException.class);
+    }
+
+    @Test
     void protocolParamsSupplierReadsEpochParameters() {
         // CCL's BF backend resolves the latest epoch number first, then fetches its parameters.
         stub.on("/api/v1/epochs/latest", "{\"epoch\": 12}");

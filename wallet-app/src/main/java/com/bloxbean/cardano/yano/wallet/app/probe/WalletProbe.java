@@ -149,6 +149,8 @@ public final class WalletProbe {
                 "ada", new BigDecimal(balance.lovelace()).movePointLeft(6).toPlainString(),
                 "utxoCount", balance.utxoCount(),
                 "addressesScanned", balance.addressCount(),
+                "scanComplete", balance.complete(),
+                "scanWarning", balance.scanWarning(),
                 "assets", balance.assets().size());
     }
 

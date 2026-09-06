@@ -23,6 +23,8 @@ class WalletAddressScannerTest {
         Set<String> history = new HashSet<>();
         Set<String> queried = new HashSet<>();
         boolean historyFails;
+        boolean historyUnsupported;
+        int historyCalls;
         void fund(String address) {
             funds.put(address, List.of(Utxo.builder().txHash(String.format("%064x", funds.size() + 1)).outputIndex(0)
                 .amount(List.of(Amount.lovelace(ADA))).build()));
@@ -34,6 +36,9 @@ class WalletAddressScannerTest {
         }
         public Optional<Utxo> getTxOutput(String hash, int index) { return Optional.empty(); }
         public boolean isUsedAddress(Address address) {
+            historyCalls++;
+            if (historyUnsupported) throw new com.bloxbean.cardano.yano.wallet.core.service.HistoryPort
+                    .HistoryNotSupportedException("No history endpoint");
             if (historyFails) throw new IllegalStateException("history unavailable");
             return history.contains(address.toBech32());
         }
@@ -142,6 +147,34 @@ class WalletAddressScannerTest {
     void acceptsGapEndingExactlyAtSafetyBound() {
         assertThat(new WalletBalanceService().scan(wallet, new Supplier(), 3, 3).addressCount())
                 .isEqualTo(6);
+    }
+
+    @Test
+    void missingHistoryScansFullBoundOnBothChainsAndMarksBalanceIncomplete() {
+        Supplier supplier = new Supplier();
+        supplier.historyUnsupported = true;
+        supplier.fund(wallet.getBaseAddressString(3));
+        supplier.fund(WalletAddresses.baseAddress(wallet, 1, 3).toBech32());
+        // A UTxO-based gap of two would stop before either funded address.
+        WalletBalance balance = new WalletBalanceService().scan(wallet, supplier, 2, 4);
+        assertThat(balance.lovelace()).isEqualTo(ADA.multiply(BigInteger.TWO));
+        assertThat(balance.utxoCount()).isEqualTo(2);
+        assertThat(balance.addressCount()).isEqualTo(8);
+        assertThat(balance.complete()).isFalse();
+        assertThat(balance.scanWarning()).contains("receive indices 0–3", "change indices 0–3", "more funds");
+        assertThat(supplier.historyCalls).isEqualTo(1);
+    }
+
+    @Test
+    void nextScanUsesHistoryAgainWhenEndpointBecomesAvailable() {
+        Supplier supplier = new Supplier();
+        supplier.historyUnsupported = true;
+        assertThat(new WalletBalanceService().scan(wallet, supplier, 2, 4).complete()).isFalse();
+        supplier.historyUnsupported = false;
+        var balance = new WalletBalanceService().scan(wallet, supplier, 2, 4);
+        assertThat(balance.complete()).isTrue();
+        assertThat(balance.scanWarning()).isNull();
+        assertThat(balance.addressCount()).isEqualTo(4);
     }
 
 }

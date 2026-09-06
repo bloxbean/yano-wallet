@@ -124,6 +124,9 @@ final class TxEffectSummariser {
      * degraded rather than misclassifying wallet inputs as somebody else's.
      */
     static WalletOwnership ownership(StoredWallet profile, WalletBalance balance) {
+        if (balance != null && !balance.complete()) {
+            throw new IllegalStateException("Wallet address discovery is incomplete");
+        }
         if (profile == null) {
             return WalletOwnership.ofAddresses(List.of());
         }

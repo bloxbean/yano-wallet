@@ -12,6 +12,7 @@ import java.util.HexFormat;
 import java.util.List;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 /**
  * ADR-042: the core→UI mapping. This is the last place a hostile string can be
@@ -45,6 +46,11 @@ class TxEffectViewMappingTest {
                 BigInteger.TEN, 40, 1, List.of(
                     new com.bloxbean.cardano.yano.wallet.core.wallet.WalletUtxoView(
                         change, "a".repeat(64), 0, BigInteger.TEN, 0, false, false)));
+        var partial = new com.bloxbean.cardano.yano.wallet.core.wallet.WalletBalance(
+                balance.lovelace(), balance.addressCount(), balance.utxoCount(), balance.utxos(),
+                balance.assets(), "History unavailable; recovery range is incomplete");
+        assertThatThrownBy(() -> TxEffectSummariser.ownership(profile, partial))
+                .isInstanceOf(IllegalStateException.class).hasMessageContaining("incomplete");
         var ownership = TxEffectSummariser.ownership(profile, balance);
         assertThat(ownership.classify(change)).isEqualTo(
                 com.bloxbean.cardano.yano.wallet.core.simulate.WalletOwnership.Ownership.MINE);
