@@ -1,6 +1,7 @@
 package com.bloxbean.cardano.yano.wallet.nodeclient;
 
 import com.bloxbean.cardano.yano.wallet.core.config.WalletNetwork;
+import com.bloxbean.cardano.yano.wallet.core.service.HistoryPort.HistoryNotSupportedException;
 import com.bloxbean.cardano.yano.wallet.core.simulate.AssetQuantity;
 import com.bloxbean.cardano.yano.wallet.core.simulate.ResolvedOutput;
 import com.bloxbean.cardano.yano.wallet.core.simulate.ScriptEvaluation;
@@ -23,6 +24,7 @@ import java.util.List;
 import java.util.HexFormat;
 import java.util.Locale;
 import java.util.Objects;
+import java.util.function.Consumer;
 
 /**
  * Thin client for Yano-specific (non-Blockfrost) endpoints of a local node:
@@ -69,6 +71,10 @@ public class YanoNodeClient {
 
     public String baseUrl() {
         return baseUri.toString();
+    }
+
+    void scanWallet(JsonNode request, Consumer<JsonNode> records) {
+        WalletScanTransport.scan(httpClient, objectMapper, baseUri.resolve("scan"), request, records);
     }
 
     /** True when this backend is yaci-store rather than a Yano node (ADR-038). */
@@ -339,6 +345,10 @@ public class YanoNodeClient {
 
     /** Distinguishes unused addresses, absent/disabled history, and failed history requests. */
     public boolean isAddressUsed(String address) {
+        if (!blockfrostFlavor) {
+            Boolean used = addressFirstSeen(address);
+            if (used != null) return used;
+        }
         String path = "addresses/" + address + "/transactions?page=1&count=1&order=asc";
         RawResponse response = getRaw(path, requestTimeout);
         // Blockfrost-compatible stores return 404 for a never-used address.
@@ -372,6 +382,41 @@ public class YanoNodeClient {
             return !root.isEmpty();
         } catch (IOException e) {
             throw new NodeClientException("Unreadable address history response", e);
+        }
+    }
+
+    /** Null means an older node lacks the route; an incomplete index never means unused. */
+    private Boolean addressFirstSeen(String address) {
+        RawResponse response = getRaw("addresses/" + address + "/first-seen", requestTimeout);
+        if (response.status() == 404) return null;
+        if (response.status() == 503) {
+            throw new HistoryNotSupportedException("Address discovery index is disabled or incomplete; enable it before a fresh node sync");
+        }
+        if (response.status() != 200) throw new NodeClientException("First-seen lookup failed (HTTP " + response.status() + ")");
+        try {
+            JsonNode root = objectMapper.readTree(response.body());
+            JsonNode coverage = root.path("coverage");
+            if (!root.has("firstSeenSlot") || !coverage.path("enabled").asBoolean()
+                    || !coverage.path("completeFromOrigin").asBoolean()
+                    || coverage.hasNonNull("unavailableReason")
+                    || !coverage.path("indexedThrough").path("blockNumber").isIntegralNumber()
+                    || !root.path("liveTip").path("blockNumber").isIntegralNumber()) {
+                throw new NodeClientException("First-seen response does not establish complete coverage");
+            }
+            JsonNode first = root.get("firstSeenSlot");
+            if (first.isNull()) {
+                if (coverage.path("indexedThrough").path("blockNumber").longValue()
+                        < root.path("liveTip").path("blockNumber").longValue()) {
+                    throw new NodeClientException("First-seen index is catching up; retry address discovery");
+                }
+                return false;
+            }
+            if (!first.isIntegralNumber() || !first.canConvertToLong() || first.longValue() < 0) {
+                throw new NodeClientException("Invalid first-seen slot");
+            }
+            return true;
+        } catch (IOException failure) {
+            throw new NodeClientException("Unreadable first-seen response", failure);
         }
     }
 

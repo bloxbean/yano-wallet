@@ -158,6 +158,7 @@ public class WalletBackendManager implements AutoCloseable {
 
         YanoNodeBackend backend = YanoNodeBackend.connectVerified(network, baseUrl);
         Path networkDir = dataDirRoot.resolve(network.id());
+        backend.ports().enableScanHistory(networkDir.resolve("scan-history"));
         FileStoredWalletRepository repository = new FileStoredWalletRepository(networkDir, network);
         WalletService service = new WalletService(
                 repository,

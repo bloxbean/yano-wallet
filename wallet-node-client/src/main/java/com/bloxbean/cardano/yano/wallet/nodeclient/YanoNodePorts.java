@@ -10,12 +10,14 @@ import com.bloxbean.cardano.yano.wallet.core.simulate.TxSimulationPort;
 import java.util.List;
 import java.util.Locale;
 import java.util.Objects;
+import java.nio.file.Path;
 
 /**
  * wallet-core port implementations over the Yano REST API (ADR-033 M2, ADR-042).
  */
 public class YanoNodePorts implements NodeStatusPort, HistoryPort, TxSimulationPort {
     private final YanoNodeClient client;
+    private WalletScanHistory scanHistory;
 
     /**
      * Probed once and reused: the answer only changes when the node is replaced,
@@ -27,6 +29,11 @@ public class YanoNodePorts implements NodeStatusPort, HistoryPort, TxSimulationP
 
     public YanoNodePorts(YanoNodeClient client) {
         this.client = Objects.requireNonNull(client, "client is required");
+    }
+
+    /** Wallet application supplies a network-scoped directory for durable scan state. */
+    public void enableScanHistory(Path directory) {
+        if (!client.isBlockfrostFlavor()) scanHistory = new WalletScanHistory(client, Objects.requireNonNull(directory));
     }
 
     @Override
@@ -61,6 +68,13 @@ public class YanoNodePorts implements NodeStatusPort, HistoryPort, TxSimulationP
     public List<TxRef> walletTransactions(String stakeAddress, String paymentAddress,
                                           int page, int count, boolean newestFirst) {
         try {
+            if (scanHistory != null) {
+                try {
+                    return scanHistory.transactions(stakeAddress, page, count, newestFirst);
+                } catch (HistoryNotSupportedException missingRoute) {
+                    // An older node may still offer the existing optional history APIs.
+                }
+            }
             String order = newestFirst ? "desc" : "asc";
             // yaci-store has no /accounts/{stake}/transactions route at all
             // (verified against a live DevKit), so asking it there 404s and the
