@@ -62,6 +62,10 @@ public final class WatchOnlyWallet implements Wallet {
         return AddressProvider.getBaseAddress(childKey(ROLE_EXTERNAL, index), childKey(ROLE_STAKE, STAKE_INDEX), network);
     }
 
+    public Address getChangeAddress(int index) {
+        return AddressProvider.getBaseAddress(childKey(1, index), childKey(ROLE_STAKE, STAKE_INDEX), network);
+    }
+
     @Override
     public Address getBaseAddress(int account, int index) {
         return getBaseAddress(index);

@@ -337,6 +337,28 @@ public class YanoNodeClient {
         return root == null ? null : parseAddressTxs(root);
     }
 
+    /** Strict discovery lookup: an unavailable index must never look like an unused address. */
+    public boolean isAddressUsed(String address) {
+        String path = "addresses/" + address + "/transactions?page=1&count=1&order=asc";
+        RawResponse response = getRaw(path, requestTimeout);
+        // Blockfrost-compatible stores return 404 for a never-used address.
+        // Yano returns [] for that case; its 404 means the route is missing.
+        if (blockfrostFlavor && response.status() == 404) return false;
+        if (response.status() != 200) {
+            throw new NodeClientException("Address history unavailable (HTTP " + response.status()
+                    + "). Enable address transaction history on the node and retry.");
+        }
+        try {
+            JsonNode root = objectMapper.readTree(response.body());
+            if (root == null || !root.isArray()) {
+                throw new NodeClientException("Invalid address history response: expected an array");
+            }
+            return !root.isEmpty();
+        } catch (IOException e) {
+            throw new NodeClientException("Unreadable address history response", e);
+        }
+    }
+
     /**
      * Stake account state from {@code GET /accounts/{stake}}. A 404 (account
      * never seen) maps to an unregistered view rather than an error.

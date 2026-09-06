@@ -1,6 +1,7 @@
 package com.bloxbean.cardano.yano.wallet.core.wallet;
 
 import com.bloxbean.cardano.client.api.UtxoSupplier;
+import com.bloxbean.cardano.client.address.Address;
 import com.bloxbean.cardano.client.api.common.OrderEnum;
 import com.bloxbean.cardano.client.api.model.Amount;
 import com.bloxbean.cardano.client.api.model.Utxo;
@@ -64,6 +65,9 @@ class WalletBalanceServiceTest {
             }
 
             @Override
+            public boolean isUsedAddress(Address address) { return address0.equals(address.toBech32()); }
+
+            @Override
             public Optional<Utxo> getTxOutput(String txHash, int outputIndex) {
                 return Optional.empty();
             }
@@ -96,6 +100,11 @@ class WalletBalanceServiceTest {
                 return List.of(utxo("b".repeat(64), 1, BigInteger.valueOf(2_000_000)));
             }
             return List.of();
+        }
+
+        @Override
+        public boolean isUsedAddress(Address address) {
+            return address0.equals(address.toBech32()) || address2.equals(address.toBech32());
         }
 
         @Override

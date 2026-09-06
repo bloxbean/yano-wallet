@@ -6,7 +6,6 @@ import com.bloxbean.cardano.client.api.UtxoSupplier;
 import com.bloxbean.cardano.client.backend.api.BackendService;
 import com.bloxbean.cardano.client.backend.api.DefaultProtocolParamsSupplier;
 import com.bloxbean.cardano.client.backend.api.DefaultTransactionProcessor;
-import com.bloxbean.cardano.client.backend.api.DefaultUtxoSupplier;
 import com.bloxbean.cardano.client.backend.blockfrost.service.BFBackendService;
 import com.bloxbean.cardano.yano.wallet.core.config.WalletNetwork;
 
@@ -36,7 +35,7 @@ public class YanoNodeBackend {
         this.network = network;
         this.nodeClient = nodeClient;
         this.backendService = backendService;
-        this.utxoSupplier = new DefaultUtxoSupplier(backendService.getUtxoService());
+        this.utxoSupplier = new YanoUtxoSupplier(backendService.getUtxoService(), nodeClient);
         this.protocolParamsSupplier = new DefaultProtocolParamsSupplier(backendService.getEpochService());
         this.transactionProcessor = new DefaultTransactionProcessor(backendService.getTransactionService());
         this.ports = new YanoNodePorts(nodeClient);

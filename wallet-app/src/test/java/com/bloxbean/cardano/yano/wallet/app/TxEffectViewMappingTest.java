@@ -34,6 +34,25 @@ class TxEffectViewMappingTest {
     }
 
     @Test
+    void ownershipIncludesRecoveredChangeInputs() {
+        var wallet = com.bloxbean.cardano.hdwallet.Wallet.create(
+                com.bloxbean.cardano.client.common.model.Networks.mainnet());
+        String change = wallet.getAccountAtIndex(0).changeAddress();
+        var profile = new com.bloxbean.cardano.yano.wallet.core.wallet.StoredWallet(
+                "test", "test", "Test", "mainnet", 0, wallet.getBaseAddressString(0),
+                wallet.getStakeAddress(), null, "test.vault", null, null, null, null);
+        var balance = new com.bloxbean.cardano.yano.wallet.core.wallet.WalletBalance(
+                BigInteger.TEN, 40, 1, List.of(
+                    new com.bloxbean.cardano.yano.wallet.core.wallet.WalletUtxoView(
+                        change, "a".repeat(64), 0, BigInteger.TEN, 0, false, false)));
+        var ownership = TxEffectSummariser.ownership(profile, balance);
+        assertThat(ownership.classify(change)).isEqualTo(
+                com.bloxbean.cardano.yano.wallet.core.simulate.WalletOwnership.Ownership.MINE);
+        assertThat(ownership.classify(wallet.getBaseAddressString(0))).isEqualTo(
+                com.bloxbean.cardano.yano.wallet.core.simulate.WalletOwnership.Ownership.MINE);
+    }
+
+    @Test
     void carriesTheDiffAcrossTheBoundaryAsPlainTypes() {
         TxEffectView view = TxEffectSummariser.toView(
                 effectWithAsset(hex("MIN"), BigInteger.valueOf(-340)), "84a4");

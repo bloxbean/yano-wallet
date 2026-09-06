@@ -15,6 +15,7 @@ import java.util.List;
 import java.util.Set;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 /**
  * Verifies the cardano-client-lib backend wiring against a stub that serves
@@ -129,6 +130,42 @@ class YanoNodeBackendTest {
         assertThat(utxos.getFirst().getAmount()).hasSize(2);
         assertThat(utxos.getFirst().getAmount().getFirst().getQuantity())
                 .isEqualTo(new BigInteger("5000000000"));
+    }
+
+    @Test
+    void historyDistinguishesUsedUnusedAndUnavailable() {
+        var backend = YanoNodeBackend.connect(WalletNetwork.MAINNET, stub.baseUrl());
+        var address = com.bloxbean.cardano.hdwallet.Wallet.create(
+                com.bloxbean.cardano.client.common.model.Networks.mainnet()).getBaseAddress(0);
+        String path = "/api/v1/addresses/" + address.toBech32() + "/transactions";
+        stub.on(path, "[{\"tx_hash\":\"abc\"}]");
+        assertThat(backend.utxoSupplier().isUsedAddress(address)).isTrue();
+        stub.on(path, "[]");
+        assertThat(backend.utxoSupplier().isUsedAddress(address)).isFalse();
+        for (int status : new int[]{404, 500, 503}) {
+            stub.on(path, req -> new StubYanoNode.Response(status, "application/json", "{}"));
+            assertThatThrownBy(() -> backend.utxoSupplier().isUsedAddress(address))
+                    .hasMessageContaining("history unavailable");
+        }
+        stub.on(path, "{}");
+        assertThatThrownBy(() -> backend.utxoSupplier().isUsedAddress(address))
+                .hasMessageContaining("expected an array");
+    }
+
+    @Test
+    void failedLaterUtxoPageDoesNotReturnPartialFunds() {
+        stub.on("/api/v1/addresses/" + ADDRESS + "/utxos", req ->
+                req.path().contains("page=1") ? StubYanoNode.Response.json(UTXOS_PAGE_1)
+                        : new StubYanoNode.Response(503, "application/json", "{}"));
+        var backend = YanoNodeBackend.connect(WalletNetwork.MAINNET, stub.baseUrl());
+        assertThatThrownBy(() -> backend.utxoSupplier().getAll(ADDRESS))
+                .hasMessageContaining("UTxO lookup failed");
+    }
+
+    @Test
+    void blockfrostStoreCanReturnNotFoundForUnusedAddress() {
+        var client = new YanoNodeClient(stub.baseUrl(), true);
+        assertThat(client.isAddressUsed(ADDRESS)).isFalse();
     }
 
     @Test

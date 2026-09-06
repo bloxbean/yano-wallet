@@ -41,6 +41,7 @@ public class DashboardScreen implements Shell.Screen {
         walletName.getStyleClass().add("screen-title");
         balanceAda.getStyleClass().add("balance-hero");
         balanceDetail.getStyleClass().add("muted");
+        balanceDetail.setWrapText(true);
 
         Button send = new Button("Send");
         send.getStyleClass().add("primary-button");
@@ -78,9 +79,8 @@ public class DashboardScreen implements Shell.Screen {
     }
 
     /**
-     * Silent periodic refresh (shell status poller). Keeps last-good balance and
-     * activity on a transient node error so, e.g., a pending tx flips to
-     * confirmed on its own without the user re-navigating.
+     * Silent periodic refresh (shell status poller). Balance errors remain visible
+     * inline so a stale or incomplete balance cannot look like a current total.
      */
     @Override
     public void poll() {
@@ -107,6 +107,9 @@ public class DashboardScreen implements Shell.Screen {
                 });
             }
         }, error -> {
+            balanceAda.setText("—");
+            balanceDetail.setText("Balance unavailable: " + error.getMessage());
+            assetsBox.getChildren().setAll(Ui.muted("Assets unavailable until balance refresh succeeds"));
             if (!silent) {
                 Ui.toast(overlay, "Balance failed: " + error.getMessage(), true);
             }
