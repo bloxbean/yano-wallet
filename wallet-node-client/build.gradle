@@ -24,6 +24,11 @@ dependencies {
 
 test {
     useJUnitPlatform()
+    // An external node artifact can change at the same path; live recovery must execute.
+    if (System.getProperty('yano.wallet.live.artifact')) {
+        outputs.upToDateWhen { false }
+        outputs.cacheIf { false }
+    }
     // Opt-in live-node tests (ADR-042 SIM-M0/SIM-M5) read this; Gradle does not
     // forward -D to the test JVM on its own. Absent → those tests stay skipped.
     ['yano.live.node', 'yano.live.outref', 'yano.wallet.live.artifact', 'yano.wallet.live.config'].each { key ->

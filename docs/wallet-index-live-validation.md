@@ -26,5 +26,6 @@ address use, graceful node restart, forced termination and restart, snapshot
 rollback removing orphaned history/outpoints, and replacement transactions.
 Wallet client objects are recreated between reads to exercise durable state;
 this is not a JavaFX UI test. General tests skip the live test unless both paths
-are supplied. Historical performance and complete runtime recovery coverage remain
+are supplied. Opt-in live runs disable Gradle cache/up-to-date reuse, because the
+external node artifact can change at the same path. Historical performance and complete runtime recovery coverage remain
 tracked in the node issue and validation report.
