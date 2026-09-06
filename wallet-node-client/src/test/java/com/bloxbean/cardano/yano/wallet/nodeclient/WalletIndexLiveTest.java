@@ -75,7 +75,7 @@ class WalletIndexLiveTest {
             assertThat(history(receiver)).extracting(TxRef::txHash).containsExactly(received.getValue());
             JsonNode saved = saved();
             assertThat(saved.path("current").path("outputs").size()).isPositive();
-            assertThat(saved.toString()).contains("Wallet119");
+            assertThat(saved.toString()).contains("57616c6c6574313139");
             assertThat(sender.stakeAddress()).isNotEqualTo(receiver.stakeAddress());
             long firstSeen = get("addresses/" + receiver.baseAddress() + "/first-seen").path("firstSeenSlot").asLong();
             assertThat(firstSeen).isPositive();

@@ -27,5 +27,7 @@ rollback removing orphaned history/outpoints, and replacement transactions.
 Wallet client objects are recreated between reads to exercise durable state;
 this is not a JavaFX UI test. General tests skip the live test unless both paths
 are supplied. Opt-in live runs disable Gradle cache/up-to-date reuse, because the
-external node artifact can change at the same path. Historical performance and complete runtime recovery coverage remain
-tracked in the node issue and validation report.
+external node artifact can change at the same path. The owner accepted devnet validation for handoff on 2026-09-06; preprod sync
+and further historical/performance validation are deferred to manual follow-up.
+The final asset assertion expects canonical hex asset names; the earlier JVM/native
+recovery runs predate that assertion update.
