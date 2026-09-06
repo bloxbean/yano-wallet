@@ -463,11 +463,29 @@ public interface WalletUiController {
     record AssetItem(String unit, String quantity) {
     }
 
+    /** ada/lovelace remain UTxO-only; the dashboard total also includes withdrawable rewards. */
     record BalanceView(String ada, String lovelace, int utxoCount, int addressesScanned,
-                       List<AssetItem> assets, String scanWarning) {
+                       List<AssetItem> assets, String scanWarning, String rewardsLovelace) {
+        public BalanceView(String ada, String lovelace, int utxoCount, int addressesScanned,
+                           List<AssetItem> assets, String scanWarning) {
+            this(ada, lovelace, utxoCount, addressesScanned, assets, scanWarning, "0");
+        }
+
         public BalanceView(String ada, String lovelace, int utxoCount, int addressesScanned,
                            List<AssetItem> assets) {
             this(ada, lovelace, utxoCount, addressesScanned, assets, null);
+        }
+
+        /** Null rewards mean the reward lookup failed, not a zero reward balance. */
+        public String rewardsAda() {
+            return rewardsLovelace == null ? null : new java.math.BigDecimal(rewardsLovelace)
+                    .movePointLeft(6).stripTrailingZeros().toPlainString();
+        }
+
+        public String totalAda() {
+            return new java.math.BigDecimal(lovelace)
+                    .add(new java.math.BigDecimal(rewardsLovelace == null ? "0" : rewardsLovelace))
+                    .movePointLeft(6).stripTrailingZeros().toPlainString();
         }
     }
 

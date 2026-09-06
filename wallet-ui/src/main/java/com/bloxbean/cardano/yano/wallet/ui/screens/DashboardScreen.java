@@ -27,6 +27,7 @@ public class DashboardScreen implements Shell.Screen {
     private boolean balanceLoading;
     private final Label balanceTitle = Ui.muted("Total balance");
     private final Label balanceAda = new Label("—");
+    private final Label rewardsBalance = new Label("Rewards: —");
     private final Label balanceDetail = new Label("");
     private final VBox assetsBox = new VBox(8);
     private final VBox activityBox = new VBox(8);
@@ -42,6 +43,7 @@ public class DashboardScreen implements Shell.Screen {
     private ScrollPane build() {
         walletName.getStyleClass().add("screen-title");
         balanceAda.getStyleClass().add("balance-hero");
+        rewardsBalance.getStyleClass().addAll("muted", "balance-rewards");
         balanceDetail.getStyleClass().add("muted");
         balanceDetail.setWrapText(true);
 
@@ -53,7 +55,7 @@ public class DashboardScreen implements Shell.Screen {
         receive.setOnAction(e -> navigate.accept("Receive"));
         HBox actions = Ui.row(10, send, receive);
 
-        VBox hero = new VBox(6, balanceTitle, balanceAda, balanceDetail, actions);
+        VBox hero = new VBox(6, balanceTitle, balanceAda, rewardsBalance, balanceDetail, actions);
         hero.getStyleClass().addAll("card", "hero-card");
         hero.setSpacing(10);
 
@@ -97,8 +99,11 @@ public class DashboardScreen implements Shell.Screen {
             balanceLoading = true;
             Ui.onFx(controller.balance(), balance -> {
                 balanceLoading = false;
-                balanceTitle.setText(balance.scanWarning() == null ? "Total balance" : "Known balance — scan incomplete");
-                balanceAda.setText("₳ " + balance.ada());
+                balanceTitle.setText(balance.scanWarning() != null ? "Known balance — scan incomplete"
+                        : balance.rewardsLovelace() == null ? "Known balance — rewards unavailable" : "Total balance");
+                balanceAda.setText("₳ " + balance.totalAda());
+                rewardsBalance.setText(balance.rewardsAda() == null ? "Rewards: unavailable"
+                        : "Rewards: ₳ " + balance.rewardsAda());
                 balanceDetail.setText(balance.utxoCount() + " UTXOs · "
                         + balance.addressesScanned() + " addresses scanned"
                         + (balance.scanWarning() == null ? "" : "\n" + balance.scanWarning()));
@@ -116,6 +121,7 @@ public class DashboardScreen implements Shell.Screen {
             }, error -> {
                 balanceLoading = false;
                 balanceAda.setText("—");
+                rewardsBalance.setText("Rewards: —");
                 balanceDetail.setText("Balance unavailable: " + error.getMessage());
                 assetsBox.getChildren().setAll(Ui.muted("Assets unavailable until balance refresh succeeds"));
                 if (!silent) {

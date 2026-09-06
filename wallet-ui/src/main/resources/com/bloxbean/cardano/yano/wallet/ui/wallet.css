@@ -92,6 +92,7 @@
     -fx-border-color: -hero-border;
 }
 .balance-hero { -fx-font-size: 38px; -fx-font-weight: 800; -fx-text-fill: -text-1; }
+.balance-rewards { -fx-font-size: 12px; }
 .balance-sub { -fx-font-size: 17px; -fx-font-weight: 700; }
 .total-amount { -fx-font-weight: 800; }
 .list-row {

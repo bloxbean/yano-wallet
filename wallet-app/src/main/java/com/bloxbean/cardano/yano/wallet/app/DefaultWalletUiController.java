@@ -939,16 +939,26 @@ public class DefaultWalletUiController implements WalletUiController {
     @Override
     public CompletableFuture<BalanceView> balance() {
         return async(() -> {
-            var balance = requireSession().balance();
-            return new BalanceView(
-                    ada(balance.lovelace()),
-                    balance.lovelace().toString(),
-                    balance.utxoCount(),
-                    balance.addressCount(),
-                    balance.assets().stream()
-                            .map(asset -> new AssetItem(asset.unit(), asset.quantity().toString()))
-                            .toList(), balance.scanWarning());
+            var active = requireSession();
+            var node = ports();
+            return balanceView(active.balance(), () -> node.accountInfo(active.profile().stakeAddress()));
         });
+    }
+
+    static BalanceView balanceView(com.bloxbean.cardano.yano.wallet.core.wallet.WalletBalance balance,
+                                   Supplier<NodeStatusPort.AccountView> accountLookup) {
+        String rewardsLovelace = null;
+        try {
+            BigInteger rewards = accountLookup.get().withdrawable();
+            if (rewards != null && rewards.signum() >= 0) rewardsLovelace = rewards.toString();
+        } catch (RuntimeException e) {
+            // Preserve the known UTxO balance and explicitly mark rewards unavailable.
+        }
+        return new BalanceView(
+                ada(balance.lovelace()), balance.lovelace().toString(), balance.utxoCount(), balance.addressCount(),
+                balance.assets().stream()
+                        .map(asset -> new AssetItem(asset.unit(), asset.quantity().toString())).toList(),
+                balance.scanWarning(), rewardsLovelace);
     }
 
     @Override
