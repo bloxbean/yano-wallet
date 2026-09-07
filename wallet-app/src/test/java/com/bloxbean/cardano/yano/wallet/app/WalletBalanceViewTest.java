@@ -42,4 +42,10 @@ class WalletBalanceViewTest {
         assertThat(view.rewardsAda()).isNull();
         assertThat(view.scanWarning()).isEqualTo("Scan incomplete");
     }
+
+    @Test
+    void transactionTimeIncludesTheYear() {
+        assertThat(DefaultWalletUiController.formatTransactionTime(1688169600L))
+                .contains("2023");
+    }
 }

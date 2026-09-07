@@ -227,7 +227,8 @@ class YanoNodeBackendTest {
         stub.on("/api/v1/tx/submit", req -> StubYanoNode.Response.json("\"" + txHash + "\""));
         YanoNodeBackend backend = YanoNodeBackend.connect(WalletNetwork.DEVNET, stub.baseUrl());
 
-        Result<String> result = backend.transactionProcessor().submitTransaction(new byte[]{(byte) 0x84, 0x01, 0x02});
+        byte[] cbor = PendingInputsTest.tx(1);
+        Result<String> result = backend.transactionProcessor().submitTransaction(cbor);
 
         assertThat(result.isSuccessful()).isTrue();
         assertThat(result.getValue()).isEqualTo(txHash);
@@ -236,7 +237,7 @@ class YanoNodeBackendTest {
                 .findFirst().orElseThrow();
         assertThat(submit.method()).isEqualTo("POST");
         assertThat(submit.contentType()).contains("application/cbor");
-        assertThat(submit.body()).containsExactly((byte) 0x84, 0x01, 0x02);
+        assertThat(submit.body()).containsExactly(cbor);
     }
 
     @Test

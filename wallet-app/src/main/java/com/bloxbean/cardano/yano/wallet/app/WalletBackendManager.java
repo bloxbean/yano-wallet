@@ -158,11 +158,17 @@ public class WalletBackendManager implements AutoCloseable {
 
         YanoNodeBackend backend = YanoNodeBackend.connectVerified(network, baseUrl);
         Path networkDir = dataDirRoot.resolve(network.id());
-        backend.ports().enableScanHistory(networkDir.resolve("scan-history"));
+        backend.persistPendingInputs(networkDir.resolve("pending-inputs.json"));
+        // /scan is Yano-specific. Yaci DevKit already supplies address transaction
+        // history and must never be probed for Yano wallet-index endpoints.
+        if (!network.blockfrostFlavor()) {
+            backend.ports().enableScanHistory(networkDir.resolve("scan-history"));
+        }
         FileStoredWalletRepository repository = new FileStoredWalletRepository(networkDir, network);
         WalletService service = new WalletService(
                 repository,
                 backend.utxoSupplier(),
+                backend.selectionUtxoSupplier(),
                 backend.protocolParamsSupplier(),
                 backend.transactionProcessor(),
                 new FilePendingTransactionStore(networkDir.resolve("pending-transactions.json")),

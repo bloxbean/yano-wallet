@@ -108,7 +108,7 @@ public class SendScreen implements Shell.Screen {
                 toField.clear();
                 amountField.clear();
                 memoField.clear();
-            });
+            }, this::review);
         }, error -> {
             reviewButton.setDisable(false);
             Ui.toast(overlay, "Draft failed: " + error.getMessage(), true);
@@ -162,4 +162,3 @@ public class SendScreen implements Shell.Screen {
         return unit.length() > 14 ? unit.substring(0, 14) + "…" : unit;
     }
 }
-

@@ -37,6 +37,7 @@ import java.util.Optional;
 public class WalletService {
     private final StoredWalletRepository repository;
     private final UtxoSupplier utxoSupplier;
+    private final UtxoSupplier selectionUtxoSupplier;
     private final ProtocolParamsSupplier protocolParamsSupplier;
     private final TransactionProcessor transactionProcessor;
     private final PendingTransactionStore pendingStore;
@@ -51,8 +52,20 @@ public class WalletService {
                          TransactionProcessor transactionProcessor,
                          PendingTransactionStore pendingStore,
                          NodeStatusPort nodeStatusPort) {
+        this(repository, utxoSupplier, utxoSupplier, protocolParamsSupplier,
+                transactionProcessor, pendingStore, nodeStatusPort);
+    }
+
+    public WalletService(StoredWalletRepository repository,
+                         UtxoSupplier utxoSupplier,
+                         UtxoSupplier selectionUtxoSupplier,
+                         ProtocolParamsSupplier protocolParamsSupplier,
+                         TransactionProcessor transactionProcessor,
+                         PendingTransactionStore pendingStore,
+                         NodeStatusPort nodeStatusPort) {
         this.repository = Objects.requireNonNull(repository, "repository is required");
         this.utxoSupplier = Objects.requireNonNull(utxoSupplier, "utxoSupplier is required");
+        this.selectionUtxoSupplier = Objects.requireNonNull(selectionUtxoSupplier, "selectionUtxoSupplier is required");
         this.protocolParamsSupplier =
                 Objects.requireNonNull(protocolParamsSupplier, "protocolParamsSupplier is required");
         this.transactionProcessor = Objects.requireNonNull(transactionProcessor, "transactionProcessor is required");
@@ -416,7 +429,7 @@ public class WalletService {
                                             List<Amount> nativeAssets, String message) {
             return txService.buildSignedDraft(
                     unlocked.wallet(),
-                    utxoSupplier,
+                    selectionUtxoSupplier,
                     protocolParamsSupplier,
                     transactionProcessor,
                     receiverAddress,
@@ -428,7 +441,7 @@ public class WalletService {
         public QuickAdaTxDraft draftPayments(List<QuickTxPayment> payments, String message) {
             return txService.buildSignedDraft(
                     unlocked.wallet(),
-                    utxoSupplier,
+                    selectionUtxoSupplier,
                     protocolParamsSupplier,
                     transactionProcessor,
                     payments,
@@ -612,7 +625,7 @@ public class WalletService {
                                                String summary,
                                                com.bloxbean.cardano.client.function.TxSigner extraSigner) {
             var builder = new com.bloxbean.cardano.client.quicktx.QuickTxBuilder(
-                    utxoSupplier, protocolParamsSupplier, transactionProcessor);
+                    selectionUtxoSupplier, protocolParamsSupplier, transactionProcessor);
             var composed = builder.compose(tx)
                     .feePayer(signerAccount.baseAddress())
                     .withSigner(com.bloxbean.cardano.client.function.helper.SignerProviders
@@ -659,6 +672,9 @@ public class WalletService {
             Result<String> result;
             try {
                 result = transactionProcessor.submitTransaction(HexUtil.decodeHexString(draft.cborHex()));
+            } catch (MempoolConflictException e) {
+                pendingStore.save(pending.markFailed(e.getMessage()));
+                throw e;
             } catch (Exception e) {
                 throw new RetryableSubmitException("Transaction submit failed: " + e.getMessage(), e);
             }

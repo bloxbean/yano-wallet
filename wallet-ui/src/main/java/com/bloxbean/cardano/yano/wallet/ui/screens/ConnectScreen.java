@@ -155,9 +155,10 @@ public class ConnectScreen {
             if (!canManage) {
                 externalToggle.setSelected(true);
                 String preset = controller.defaultBaseUrl(network);
-                if (preset != null && urlField.getText().isBlank()) {
-                    urlField.setText(preset);
-                }
+                // Do not carry the URL from the previously selected network into
+                // Yaci DevKit. A saved connection is restored separately below;
+                // a fresh network selection starts from the network's own URL.
+                urlField.setText(preset == null ? "" : preset);
             } else if (!NetworkPrefs.managed(network, true)) {
                 // Restore how this network was last reached, rather than carrying
                 // the previously selected network's mode over to it.

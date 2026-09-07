@@ -11,6 +11,10 @@ import java.util.concurrent.CompletableFuture;
  * completes off the FX thread and callers hop back via {@code Platform.runLater}.
  */
 public interface WalletUiController {
+    /** The draft was rejected; rebuilding requires a fresh review, never a retry of its CBOR. */
+    class DraftNeedsRebuildException extends RuntimeException {
+        public DraftNeedsRebuildException(String message) { super(message); }
+    }
 
     // --- connection (managed local node vs external node) ---
     /** The networks the wallet can connect to. */

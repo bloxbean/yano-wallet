@@ -13,6 +13,7 @@ import com.bloxbean.cardano.yano.wallet.core.config.WalletNetwork;
 import com.bloxbean.cardano.yano.wallet.core.service.HistoryPort;
 import com.bloxbean.cardano.yano.wallet.core.service.NodeStatusPort;
 import com.bloxbean.cardano.yano.wallet.core.service.WalletService;
+import com.bloxbean.cardano.yano.wallet.core.service.MempoolConflictException;
 import com.bloxbean.cardano.yano.wallet.core.tx.PendingTransaction;
 import com.bloxbean.cardano.yano.wallet.core.tx.QuickAdaTxDraft;
 import com.bloxbean.cardano.yano.wallet.core.wallet.StoredWallet;
@@ -46,7 +47,7 @@ import java.util.function.Supplier;
  */
 public class DefaultWalletUiController implements WalletUiController {
     private static final DateTimeFormatter TIME_FORMAT =
-            DateTimeFormatter.ofPattern("dd MMM HH:mm").withZone(ZoneId.systemDefault());
+            DateTimeFormatter.ofPattern("dd MMM yyyy HH:mm").withZone(ZoneId.systemDefault());
     /** Account-discovery bounds (ADR-037): each probe is a node call, so stay modest. */
     private static final int MAX_DISCOVERED_ACCOUNTS = 20;
     private static final int DISCOVERY_GAP_LIMIT = 20;
@@ -986,7 +987,7 @@ public class DefaultWalletUiController implements WalletUiController {
                         profile.stakeAddress(), profile.baseAddress(), page, count, true)) {
                     nodeHashes.add(tx.txHash());
                     dated.add(new Dated(tx.blockTime(), new TxItem(tx.txHash(), tx.blockHeight(),
-                            TIME_FORMAT.format(Instant.ofEpochSecond(tx.blockTime())),
+                            formatTransactionTime(tx.blockTime()),
                             "confirmed", null, null, explorerUrl(network, tx.txHash()))));
                 }
             } catch (HistoryPort.HistoryNotSupportedException e) {
@@ -1042,6 +1043,10 @@ public class DefaultWalletUiController implements WalletUiController {
             dated.forEach(entry -> items.add(entry.item()));
             return new HistoryPage(items, false);
         });
+    }
+
+    static String formatTransactionTime(long epochSeconds) {
+        return TIME_FORMAT.format(Instant.ofEpochSecond(epochSeconds));
     }
 
     /**
@@ -1575,48 +1580,59 @@ public class DefaultWalletUiController implements WalletUiController {
     @Override
     public CompletableFuture<SubmitView> confirmDraft(String draftId) {
         return async(() -> {
-            HardwareSendService.Draft hardwareDraft = hardwareDrafts.get(draftId);
-            if (hardwareDraft != null) {
-                var connection = backendManager.active();
-                String hwTxHash = hardwareSend.signAndSubmit(
-                        connection.backend(), connection.network(), hardwareDraft);
-                hardwareDrafts.remove(draftId);
-                service().recordSubmittedPayment(hardwareDraft.profile(), hwTxHash,
-                        hardwareDraft.amount(), hardwareDraft.fee(), hardwareDraft.toAddress(),
-                        hardwareDraft.ttl());
-                service().trackConfirmation(hwTxHash, 120);
-                return new SubmitView(hwTxHash, false);
-            }
-            HardwareStakeService.Draft stakeDraft = hardwareStakeDrafts.get(draftId);
-            if (stakeDraft != null) {
-                var connection = backendManager.active();
-                String hwTxHash = hardwareStake.signAndSubmit(
-                        connection.backend(), connection.network(), stakeDraft);
-                hardwareStakeDrafts.remove(draftId);
-                service().recordSubmittedPayment(stakeDraft.profile(), hwTxHash,
-                        BigInteger.ZERO, stakeDraft.fee(), stakeDraft.summary(), stakeDraft.ttl());
-                service().trackConfirmation(hwTxHash, 120);
-                return new SubmitView(hwTxHash, false);
-            }
-            QuickAdaTxDraft draft = drafts.get(draftId);
-            if (draft == null) {
-                throw new IllegalStateException("Draft expired — please review again");
-            }
-            String txHash;
             try {
-                txHash = requireSession().submit(draft);
-            } catch (WalletService.RetryableSubmitException e) {
-                throw e; // Transport failure: keep the signed draft so the user can retry.
-            } catch (RuntimeException e) {
-                drafts.remove(draftId); // Terminal rejection: the tx is invalid, don't retry it.
-                throw e;
+                return submitExistingDraft(draftId);
+            } catch (MempoolConflictException e) {
+                drafts.remove(draftId);
+                hardwareDrafts.remove(draftId);
+                hardwareStakeDrafts.remove(draftId);
+                throw new DraftNeedsRebuildException(e.getMessage());
             }
-            drafts.remove(draftId);
-            // Confirmation polling on a dedicated thread (never the shared
-            // backend executor) and holding no reference to the session/keys.
-            service().trackConfirmation(txHash, 120);
-            return new SubmitView(txHash, false);
         });
+    }
+
+    private SubmitView submitExistingDraft(String draftId) {
+        HardwareSendService.Draft hardwareDraft = hardwareDrafts.get(draftId);
+        if (hardwareDraft != null) {
+            var connection = backendManager.active();
+            String hwTxHash = hardwareSend.signAndSubmit(
+                    connection.backend(), connection.network(), hardwareDraft);
+            hardwareDrafts.remove(draftId);
+            service().recordSubmittedPayment(hardwareDraft.profile(), hwTxHash,
+                    hardwareDraft.amount(), hardwareDraft.fee(), hardwareDraft.toAddress(),
+                    hardwareDraft.ttl());
+            service().trackConfirmation(hwTxHash, 120);
+            return new SubmitView(hwTxHash, false);
+        }
+        HardwareStakeService.Draft stakeDraft = hardwareStakeDrafts.get(draftId);
+        if (stakeDraft != null) {
+            var connection = backendManager.active();
+            String hwTxHash = hardwareStake.signAndSubmit(
+                    connection.backend(), connection.network(), stakeDraft);
+            hardwareStakeDrafts.remove(draftId);
+            service().recordSubmittedPayment(stakeDraft.profile(), hwTxHash,
+                    BigInteger.ZERO, stakeDraft.fee(), stakeDraft.summary(), stakeDraft.ttl());
+            service().trackConfirmation(hwTxHash, 120);
+            return new SubmitView(hwTxHash, false);
+        }
+        QuickAdaTxDraft draft = drafts.get(draftId);
+        if (draft == null) {
+            throw new IllegalStateException("Draft expired — please review again");
+        }
+        String txHash;
+        try {
+            txHash = requireSession().submit(draft);
+        } catch (WalletService.RetryableSubmitException e) {
+            throw e; // Transport failure: keep the signed draft so the user can retry.
+        } catch (RuntimeException e) {
+            drafts.remove(draftId); // Terminal rejection: the tx is invalid, don't retry it.
+            throw e;
+        }
+        drafts.remove(draftId);
+        // Confirmation polling on a dedicated thread (never the shared
+        // backend executor) and holding no reference to the session/keys.
+        service().trackConfirmation(txHash, 120);
+        return new SubmitView(txHash, false);
     }
 
     private DraftView cacheDraft(QuickAdaTxDraft draft, String kind, String toSummary,
