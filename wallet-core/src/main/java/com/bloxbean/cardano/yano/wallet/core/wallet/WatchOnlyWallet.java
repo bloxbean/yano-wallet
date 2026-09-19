@@ -51,7 +51,7 @@ public final class WatchOnlyWallet implements Wallet {
         return new WatchOnlyWallet(network, HexUtil.decodeHexString(accountXpubHex), accountNo);
     }
 
-    private HdPublicKey childKey(int role, int index) {
+    HdPublicKey childKey(int role, int index) {
         return cip1852.getPublicKeyFromAccountPubKey(accountXpub, role, index);
     }
 

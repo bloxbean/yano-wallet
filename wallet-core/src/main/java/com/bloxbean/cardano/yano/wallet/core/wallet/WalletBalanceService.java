@@ -22,7 +22,8 @@ public class WalletBalanceService {
         return balance(new WalletAddressScanner().scan(wallet, utxoSupplier, gapLimit, maxAddresses));
     }
 
-    private WalletBalance balance(WalletAddressScanner.Scan scan) {
+    /** Aggregate a completed scan; callers may retain its public derivation paths. */
+    public WalletBalance balance(WalletAddressScanner.Scan scan) {
         BigInteger total = BigInteger.ZERO;
         List<WalletUtxoView> walletUtxos = new ArrayList<>();
         Map<String, BigInteger> assets = new LinkedHashMap<>();

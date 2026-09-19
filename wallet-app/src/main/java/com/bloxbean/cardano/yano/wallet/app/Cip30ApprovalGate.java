@@ -1,6 +1,8 @@
 package com.bloxbean.cardano.yano.wallet.app;
 
 import com.bloxbean.cardano.yano.wallet.connector.Cip30Approvals;
+import com.bloxbean.cardano.yano.wallet.connector.Cip30Exception;
+import com.bloxbean.cardano.yano.wallet.core.tx.DappSignerSearch;
 import com.bloxbean.cardano.yano.wallet.ui.contract.Cip30Prompt;
 import com.bloxbean.cardano.yano.wallet.ui.contract.TxEffectView;
 
@@ -18,11 +20,14 @@ final class Cip30ApprovalGate implements Cip30Approvals {
     private final Cip30AllowlistStore allowlist;
     private final Cip30Prompt prompt;
     private final TxEffectSummariser summariser;
+    private final WalletCip30Wallet wallet;
 
-    Cip30ApprovalGate(Cip30AllowlistStore allowlist, Cip30Prompt prompt, TxEffectSummariser summariser) {
+    Cip30ApprovalGate(Cip30AllowlistStore allowlist, Cip30Prompt prompt, TxEffectSummariser summariser,
+                      WalletCip30Wallet wallet) {
         this.allowlist = allowlist;
         this.prompt = prompt;
         this.summariser = summariser;
+        this.wallet = wallet;
     }
 
     @Override
@@ -44,14 +49,47 @@ final class Cip30ApprovalGate implements Cip30Approvals {
 
     @Override
     public boolean confirmSign(String origin, String txHex, boolean partialSign) {
-        // Simulation is best-effort and bounded; it never decides for the user and
-        // never blocks the prompt from appearing.
+        // Key discovery fails closed if input ownership cannot be resolved.
+        // The separate effect simulation is best-effort and visibly reports its limits.
+        var review = wallet.reviewSigning(txHex, partialSign, DappSignerSearch.DEFAULT_LIMIT);
+        if (review.plan() != null && !review.plan().unmatched().isEmpty()
+                && prompt.confirmExtendedSignerSearch(origin, review.plan().description())) {
+            var extended = wallet.reviewSigning(txHex, partialSign, DappSignerSearch.EXTENDED_LIMIT);
+            if (extended.session() != review.session() || extended.connection() != review.connection())
+                throw Cip30Exception.refused("Account or network changed during signer search. Retry the request.");
+            review = extended;
+        }
+        if (review.plan() != null) {
+            if (!review.plan().hasSigners())
+                throw Cip30Exception.refused("No matching signing keys found. " + review.plan().description());
+            if (!partialSign && !review.plan().unmatched().isEmpty())
+                throw Cip30Exception.refused("Cannot fully sign within this search. " + review.plan().description());
+        }
         TxEffectView effect = summariser.summarise(txHex);
-        return prompt.confirmSign(origin, effect);
+        String paths = review.plan() == null ? "Hardware wallet: verify signing on the device."
+                : review.plan().description();
+        if (!prompt.confirmSign(origin, effect, paths)) return false;
+        wallet.approveSigning(review);
+        return true;
     }
 
     @Override
     public boolean confirmSignData(String origin, String address) {
-        return prompt.confirmSignData(origin, address);
+        return false; // A payload-bound review is required by this implementation.
+    }
+
+    @Override
+    public boolean confirmSignData(String origin, String address, String payload) {
+        var review = wallet.reviewData(address, payload, DappSignerSearch.DEFAULT_LIMIT);
+        if (!review.plan().hasSigner() && prompt.confirmExtendedSignerSearch(origin, review.plan().description())) {
+            var extended = wallet.reviewData(address, payload, DappSignerSearch.EXTENDED_LIMIT);
+            if (extended.session() != review.session() || extended.connection() != review.connection())
+                throw Cip30Exception.refused("Account or network changed during signer search. Retry the request.");
+            review = extended;
+        }
+        if (!review.plan().hasSigner()) throw Cip30Exception.refused("No matching data signing key. " + review.plan().description());
+        if (!prompt.confirmSignData(origin, address, review.plan().description(), review.plan().payload())) return false;
+        wallet.approveData(review);
+        return true;
     }
 }

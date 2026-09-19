@@ -755,7 +755,7 @@ public class DefaultWalletUiController implements WalletUiController {
             boolean webSocketChosen = connectorSettings.isWebSocket();
             wsConnectorEnabled = wsConnectorEnabled || webSocketChosen;
             var wallet = new WalletCip30Wallet(backendManager, () -> session);
-            var approvals = new Cip30ApprovalGate(cip30Allowlist, prompt, summariser());
+            var approvals = new Cip30ApprovalGate(cip30Allowlist, prompt, summariser(), wallet);
             // Default transport (ADR-035 M5): the browser-launched proxy relays
             // to this socket — no localhost port, and Chrome vouches for the
             // extension id. Best-effort; a bind failure never breaks the wallet.
