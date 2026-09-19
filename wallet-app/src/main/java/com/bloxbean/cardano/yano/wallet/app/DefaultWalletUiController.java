@@ -971,6 +971,16 @@ public class DefaultWalletUiController implements WalletUiController {
     }
 
     @Override
+    public CompletableFuture<AddressDetails> addressDetails(int index) {
+        return async(() -> {
+            var details = requireSession().addressDetails(index);
+            return new AddressDetails(details.address(), details.paymentPath(), details.stakePath(),
+                    details.paymentPublicKey(), details.paymentKeyHash(),
+                    details.stakePublicKey(), details.stakeKeyHash());
+        });
+    }
+
+    @Override
     public CompletableFuture<HistoryPage> history(int page, int count) {
         return async(() -> {
             WalletService.Session active = requireSession();

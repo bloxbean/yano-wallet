@@ -323,6 +323,10 @@ public interface WalletUiController {
 
     CompletableFuture<List<AddressItem>> addresses(int count);
 
+    default CompletableFuture<AddressDetails> addressDetails(int index) {
+        return CompletableFuture.failedFuture(new UnsupportedOperationException("Public keys are unavailable"));
+    }
+
     CompletableFuture<HistoryPage> history(int page, int count);
 
     CompletableFuture<List<RewardItem>> rewards(int page, int count);
@@ -495,6 +499,10 @@ public interface WalletUiController {
 
     record AddressItem(int index, String address, String derivationPath) {
     }
+
+    record AddressDetails(String address, String paymentPath, String stakePath,
+                          String paymentPublicKey, String paymentKeyHash,
+                          String stakePublicKey, String stakeKeyHash) {}
 
     record TxItem(String txHash, long blockHeight, String timeText, String status,
                   String amountText, String direction, String explorerUrl) {

@@ -87,6 +87,20 @@
     -fx-padding: 18;
 }
 .card-title { -fx-text-fill: -text-2; -fx-font-size: 12px; -fx-font-weight: 700; }
+
+.address-details-card { -fx-border-color: -accent; }
+.address-stake-details { -fx-text-fill: -text-1; }
+.address-stake-details > .title {
+    -fx-background-color: -surface-2;
+    -fx-background-radius: 6;
+    -fx-padding: 10 12;
+}
+.address-stake-details > .title > .arrow-button > .arrow { -fx-background-color: -text-2; }
+.address-stake-details > .content {
+    -fx-background-color: -surface-1;
+    -fx-border-color: -border;
+    -fx-padding: 12;
+}
 .hero-card {
     -fx-background-color: linear-gradient(to bottom right, -hero-from, -hero-to);
     -fx-border-color: -hero-border;
