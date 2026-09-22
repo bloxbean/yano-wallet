@@ -329,6 +329,16 @@ public interface WalletUiController {
 
     CompletableFuture<HistoryPage> history(int page, int count);
 
+    /**
+     * Whether a wallet scan is running right now, and how far it has walked. The
+     * History screen polls this while a page is in flight: a first scan reads the
+     * whole chain before it can answer, and a screen with nothing on it for that
+     * long is indistinguishable from one that failed.
+     */
+    default CompletableFuture<HistoryScanView> historyScanStatus() {
+        return CompletableFuture.completedFuture(HistoryScanView.idle());
+    }
+
     CompletableFuture<List<RewardItem>> rewards(int page, int count);
 
     CompletableFuture<StakingView> staking();
@@ -518,6 +528,22 @@ public interface WalletUiController {
      * comparing it against their balance would otherwise conclude the wallet had
      * lost a transaction.
      */
+    /**
+     * A scan in flight, or {@link #idle()} when none is. Blocks are absolute
+     * chain heights so the screen can name where the scan has got to, which is
+     * what distinguishes slow progress from a stall.
+     */
+    record HistoryScanView(long currentBlock, long tipBlock, int percent) {
+        public static HistoryScanView idle() {
+            return new HistoryScanView(0, 0, -1);
+        }
+
+        /** A scan is running only when the node has told us how far it reaches. */
+        public boolean scanning() {
+            return percent >= 0 && tipBlock > 0;
+        }
+    }
+
     record HistoryPage(List<TxItem> items, boolean localOnly) {
         public HistoryPage {
             items = items == null ? List.of() : List.copyOf(items);

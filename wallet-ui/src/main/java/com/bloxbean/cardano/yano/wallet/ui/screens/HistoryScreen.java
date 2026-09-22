@@ -3,6 +3,8 @@ package com.bloxbean.cardano.yano.wallet.ui.screens;
 import com.bloxbean.cardano.yano.wallet.ui.Shell;
 import com.bloxbean.cardano.yano.wallet.ui.contract.WalletUiController;
 import com.bloxbean.cardano.yano.wallet.ui.util.Ui;
+import javafx.animation.KeyFrame;
+import javafx.animation.Timeline;
 import javafx.geometry.Insets;
 import javafx.scene.Node;
 import javafx.scene.control.Button;
@@ -10,6 +12,7 @@ import javafx.scene.control.Label;
 import javafx.scene.control.ScrollPane;
 import javafx.scene.layout.StackPane;
 import javafx.scene.layout.VBox;
+import javafx.util.Duration;
 
 /**
  * Full transaction history — from the node's address-tx index (ADR-033 M2), or
@@ -40,8 +43,10 @@ public class HistoryScreen implements Shell.Screen {
             "This node keeps no transaction index, so this list is the wallet's own record of what "
                     + "it sent — including transactions a connected dApp submitted through it. Funds "
                     + "received from elsewhere are counted in your balance but do not appear here.");
+    private final Label progress = Ui.muted("");
     private final ScrollPane root;
     private int page = 1;
+    private Timeline scanPoller;
 
     public HistoryScreen(WalletUiController controller, StackPane overlay) {
         this.controller = controller;
@@ -90,7 +95,18 @@ public class HistoryScreen implements Shell.Screen {
     }
 
     private void loadPage(int newPage, boolean reset) {
+        if (reset) {
+            // A first scan walks the whole chain before it can answer — over half
+            // a minute on mainnet. Saying so up front is the difference between
+            // "working" and "broken": until this, the screen sat empty either way.
+            progress.setText("Loading history…");
+            listBox.getChildren().setAll(progress);
+            moreButton.setVisible(false);
+            moreButton.setManaged(false);
+            startProgressPolling();
+        }
         Ui.onFx(controller.history(newPage, PAGE_SIZE), history -> {
+            stopProgressPolling();
             if (reset) {
                 listBox.getChildren().clear();
             }
@@ -98,7 +114,7 @@ public class HistoryScreen implements Shell.Screen {
             showLocalOnly(history.localOnly());
             var txs = history.items();
             if (txs.isEmpty() && reset) {
-                listBox.getChildren().add(Ui.muted("No transactions yet"));
+                listBox.getChildren().add(Ui.muted(emptyMessage(history.localOnly())));
             }
             txs.forEach(tx -> listBox.getChildren().add(txRow(tx)));
             // Page 1 may include a few local pending rows on top of the node
@@ -107,6 +123,7 @@ public class HistoryScreen implements Shell.Screen {
             moreButton.setVisible(maybeMore);
             moreButton.setManaged(maybeMore);
         }, error -> {
+            stopProgressPolling();
             if (reset) {
                 listBox.getChildren().setAll(Ui.muted("History unavailable: " + error.getMessage()));
                 moreButton.setVisible(false);
@@ -115,6 +132,53 @@ public class HistoryScreen implements Shell.Screen {
                 Ui.toast(overlay, "History failed: " + error.getMessage(), true);
             }
         });
+    }
+
+    /**
+     * Polls only while a page is in flight, and faster than the shell's 5-second
+     * tick — a scan that takes half a minute deserves a line that visibly moves,
+     * which is what separates slow work from a stall.
+     */
+    private void startProgressPolling() {
+        stopProgressPolling();
+        scanPoller = new Timeline(new KeyFrame(Duration.seconds(0.5), e -> pollScan()));
+        scanPoller.setCycleCount(Timeline.INDEFINITE);
+        scanPoller.play();
+        pollScan();
+    }
+
+    private void stopProgressPolling() {
+        if (scanPoller != null) {
+            scanPoller.stop();
+            scanPoller = null;
+        }
+    }
+
+    private void pollScan() {
+        Ui.onFx(controller.historyScanStatus(), status -> {
+            // Only while the placeholder is still the whole list: a page that has
+            // arrived must never be overwritten by a late poll.
+            if (scanPoller != null && listBox.getChildren().size() == 1
+                    && listBox.getChildren().getFirst() == progress && status.scanning()) {
+                progress.setText(scanMessage(status));
+            }
+        }, error -> { /* progress is decoration; the page's own error reports failure */ });
+    }
+
+    /**
+     * Named separately from the ordinary empty list because they mean opposite
+     * things: one wallet has sent nothing yet, the other is connected to a node
+     * that indexes no transactions at all and has no local record either.
+     */
+    static String emptyMessage(boolean localOnly) {
+        return localOnly
+                ? "History not found — this node serves no transaction index, and this wallet has no record of sending anything."
+                : "No transactions yet";
+    }
+
+    static String scanMessage(WalletUiController.HistoryScanView status) {
+        return "Scanning the chain for your transactions — block %,d of %,d · %d%%"
+                .formatted(status.currentBlock(), status.tipBlock(), status.percent());
     }
 
     private void showLocalOnly(boolean localOnly) {

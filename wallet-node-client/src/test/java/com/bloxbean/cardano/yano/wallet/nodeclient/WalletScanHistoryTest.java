@@ -121,6 +121,25 @@ class WalletScanHistoryTest {
         }
     }
 
+    @Test void progressIsReportedOnlyWhileAScanIsRunning() throws Exception {
+        try (StubYanoNode node = new StubYanoNode()) {
+            WalletScanHistory history = history(node);
+            assertThat(history.progress()).isEmpty();
+
+            node.on("/api/v1/scan", stream(1, transaction(1, false)));
+            history.transactions(STAKE, 1, 10, false);
+            // A finished scan is not progress: its rows are about to be shown.
+            assertThat(history.progress()).isEmpty();
+
+            // And a scan that fails must not leave a percentage frozen on screen
+            // claiming work is still going on.
+            node.on("/api/v1/scan", ready(2) + transaction(2, true));
+            assertThatThrownBy(() -> history.transactions(STAKE, 1, 10, false))
+                    .isInstanceOf(NodeClientException.class);
+            assertThat(history.progress()).isEmpty();
+        }
+    }
+
     private WalletScanHistory history(StubYanoNode node) {
         return new WalletScanHistory(new YanoNodeClient(node.baseUrl(), false), directory);
     }

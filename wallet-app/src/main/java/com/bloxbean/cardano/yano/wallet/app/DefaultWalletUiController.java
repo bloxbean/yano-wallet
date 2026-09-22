@@ -981,6 +981,23 @@ public class DefaultWalletUiController implements WalletUiController {
     }
 
     @Override
+    public CompletableFuture<HistoryScanView> historyScanStatus() {
+        // Common pool, never the backend executor: the scan this reports on holds
+        // that single thread for its whole run, so a poll queued behind it could
+        // only ever arrive after the thing it describes had finished.
+        return io(() -> {
+            try {
+                return ports().scanProgress()
+                        .map(scan -> new HistoryScanView(scan.currentBlock(), scan.tipBlock(),
+                                (int) Math.round(scan.fraction() * 100)))
+                        .orElse(HistoryScanView.idle());
+            } catch (RuntimeException notConnected) {
+                return HistoryScanView.idle();
+            }
+        });
+    }
+
+    @Override
     public CompletableFuture<HistoryPage> history(int page, int count) {
         return async(() -> {
             WalletService.Session active = requireSession();

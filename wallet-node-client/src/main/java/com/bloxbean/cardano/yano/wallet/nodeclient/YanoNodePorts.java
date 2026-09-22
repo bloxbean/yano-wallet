@@ -10,6 +10,7 @@ import com.bloxbean.cardano.yano.wallet.core.simulate.TxSimulationPort;
 import java.util.List;
 import java.util.Locale;
 import java.util.Objects;
+import java.util.Optional;
 import java.nio.file.Path;
 
 /**
@@ -98,6 +99,11 @@ public class YanoNodePorts implements NodeStatusPort, HistoryPort, TxSimulationP
         } catch (NodeClientException e) {
             throw new HistoryUnavailableException(e.getMessage());
         }
+    }
+
+    @Override
+    public Optional<HistoryPort.ScanProgress> scanProgress() {
+        return scanHistory == null ? Optional.empty() : scanHistory.progress();
     }
 
     @Override

@@ -2,6 +2,7 @@ package com.bloxbean.cardano.yano.wallet.nodeclient;
 
 import com.bloxbean.cardano.client.address.Address;
 import com.bloxbean.cardano.client.address.util.AddressUtil;
+import com.bloxbean.cardano.yano.wallet.core.service.HistoryPort.ScanProgress;
 import com.bloxbean.cardano.yano.wallet.core.service.HistoryPort.TxRef;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
@@ -22,6 +23,7 @@ import java.util.ArrayList;
 import java.util.Comparator;
 import java.util.HexFormat;
 import java.util.List;
+import java.util.Optional;
 
 /** Atomic wallet-local cursor, matching outputs and transaction history. */
 final class WalletScanHistory {
@@ -30,9 +32,22 @@ final class WalletScanHistory {
     private final Path directory;
     private final ObjectMapper mapper = new ObjectMapper();
 
+    /** Set while a scan is streaming; read by the UI from another thread. */
+    private volatile ScanProgressTracker tracker;
+
     WalletScanHistory(YanoNodeClient client, Path directory) {
         this.client = client;
         this.directory = directory;
+    }
+
+    /**
+     * Deliberately not synchronized: {@link #transactions} holds this instance's
+     * lock for the whole scan, so a progress read that waited for it could only
+     * ever report a scan that had already finished.
+     */
+    Optional<ScanProgress> progress() {
+        ScanProgressTracker current = tracker;
+        return current == null ? Optional.empty() : current.snapshot();
     }
 
     synchronized List<TxRef> transactions(String stakeAddress, int page, int count, boolean newestFirst) {
@@ -92,7 +107,25 @@ final class WalletScanHistory {
         JsonNode[] end = {null};
         JsonNode[] last = {previous.path("cursor")};
         boolean[] genesis = {false};
+        ScanProgressTracker progress = new ScanProgressTracker(previous.path("cursor").path("blockNumber").longValue());
+        tracker = progress;
+        try {
+            scanRecords(request, progress, previous, next, outputs, transactions, stakeHash, script,
+                    ready, end, last, genesis);
+        } finally {
+            // Cleared on every exit, so a failed or abandoned scan never leaves a
+            // stalled percentage on screen claiming work is still happening.
+            tracker = null;
+        }
+        return next;
+    }
+
+    private void scanRecords(ObjectNode request, ScanProgressTracker progress, ObjectNode previous,
+                             ObjectNode next, ObjectNode outputs, ObjectNode transactions,
+                             String stakeHash, boolean script, boolean[] ready, JsonNode[] end,
+                             JsonNode[] last, boolean[] genesis) {
         client.scanWallet(request, record -> {
+            progress.observe(record);
             String type = record.path("type").asText();
             switch (type) {
                 case "ready" -> {
@@ -157,7 +190,6 @@ final class WalletScanHistory {
                 default -> throw new NodeClientException("Unknown scan record type: " + type);
             }
         });
-        return next;
     }
 
     private ObjectNode empty() {
