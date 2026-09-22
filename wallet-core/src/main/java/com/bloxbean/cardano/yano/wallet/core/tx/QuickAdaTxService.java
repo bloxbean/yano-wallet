@@ -13,6 +13,8 @@ import com.bloxbean.cardano.client.transaction.spec.Transaction;
 import com.bloxbean.cardano.client.transaction.util.TransactionUtil;
 import com.bloxbean.cardano.client.util.HexUtil;
 import com.bloxbean.cardano.hdwallet.Wallet;
+import com.bloxbean.cardano.yano.wallet.core.wallet.DiscoveredSpendingWallet;
+import com.bloxbean.cardano.yano.wallet.core.wallet.WalletAddressScanner;
 
 import java.math.BigInteger;
 import java.util.LinkedHashMap;
@@ -79,11 +81,13 @@ public class QuickAdaTxService {
             throw new IllegalArgumentException("at least one payment is required");
         }
 
+        Wallet spendingWallet = new DiscoveredSpendingWallet(wallet,
+                new WalletAddressScanner().scan(wallet, utxoSupplier));
         QuickTxBuilder builder = new QuickTxBuilder(utxoSupplier, protocolParamsSupplier, transactionProcessor);
         String senderAddress = wallet.getBaseAddressString(0);
         Tx tx = new Tx();
         normalizedPayments.forEach(payment -> tx.payToAddress(payment.receiverAddress(), payment.amounts()));
-        tx.from(wallet);
+        tx.from(spendingWallet);
         tx.withChangeAddress(senderAddress);
         String normalizedMetadata = metadataMessage == null ? null : metadataMessage.trim();
         if (normalizedMetadata != null && !normalizedMetadata.isBlank()) {
@@ -91,8 +95,8 @@ public class QuickAdaTxService {
         }
 
         Transaction signed = builder.compose(tx)
-                .feePayer(wallet)
-                .withSigner(SignerProviders.signerFrom(wallet))
+                .feePayer(spendingWallet)
+                .withSigner(SignerProviders.signerFrom(spendingWallet))
                 .buildAndSign();
 
         byte[] cbor;

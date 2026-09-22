@@ -11,6 +11,10 @@ import java.util.concurrent.CompletableFuture;
  * completes off the FX thread and callers hop back via {@code Platform.runLater}.
  */
 public interface WalletUiController {
+    /** The draft was rejected; rebuilding requires a fresh review, never a retry of its CBOR. */
+    class DraftNeedsRebuildException extends RuntimeException {
+        public DraftNeedsRebuildException(String message) { super(message); }
+    }
 
     // --- connection (managed local node vs external node) ---
     /** The networks the wallet can connect to. */
@@ -319,7 +323,21 @@ public interface WalletUiController {
 
     CompletableFuture<List<AddressItem>> addresses(int count);
 
+    default CompletableFuture<AddressDetails> addressDetails(int index) {
+        return CompletableFuture.failedFuture(new UnsupportedOperationException("Public keys are unavailable"));
+    }
+
     CompletableFuture<HistoryPage> history(int page, int count);
+
+    /**
+     * Whether a wallet scan is running right now, and how far it has walked. The
+     * History screen polls this while a page is in flight: a first scan reads the
+     * whole chain before it can answer, and a screen with nothing on it for that
+     * long is indistinguishable from one that failed.
+     */
+    default CompletableFuture<HistoryScanView> historyScanStatus() {
+        return CompletableFuture.completedFuture(HistoryScanView.idle());
+    }
 
     CompletableFuture<List<RewardItem>> rewards(int page, int count);
 
@@ -463,12 +481,38 @@ public interface WalletUiController {
     record AssetItem(String unit, String quantity) {
     }
 
+    /** ada/lovelace remain UTxO-only; the dashboard total also includes withdrawable rewards. */
     record BalanceView(String ada, String lovelace, int utxoCount, int addressesScanned,
-                       List<AssetItem> assets) {
+                       List<AssetItem> assets, String scanWarning, String rewardsLovelace) {
+        public BalanceView(String ada, String lovelace, int utxoCount, int addressesScanned,
+                           List<AssetItem> assets, String scanWarning) {
+            this(ada, lovelace, utxoCount, addressesScanned, assets, scanWarning, "0");
+        }
+
+        public BalanceView(String ada, String lovelace, int utxoCount, int addressesScanned,
+                           List<AssetItem> assets) {
+            this(ada, lovelace, utxoCount, addressesScanned, assets, null);
+        }
+
+        /** Null rewards mean the reward lookup failed, not a zero reward balance. */
+        public String rewardsAda() {
+            return rewardsLovelace == null ? null : new java.math.BigDecimal(rewardsLovelace)
+                    .movePointLeft(6).stripTrailingZeros().toPlainString();
+        }
+
+        public String totalAda() {
+            return new java.math.BigDecimal(lovelace)
+                    .add(new java.math.BigDecimal(rewardsLovelace == null ? "0" : rewardsLovelace))
+                    .movePointLeft(6).stripTrailingZeros().toPlainString();
+        }
     }
 
     record AddressItem(int index, String address, String derivationPath) {
     }
+
+    record AddressDetails(String address, String paymentPath, String stakePath,
+                          String paymentPublicKey, String paymentKeyHash,
+                          String stakePublicKey, String stakeKeyHash) {}
 
     record TxItem(String txHash, long blockHeight, String timeText, String status,
                   String amountText, String direction, String explorerUrl) {
@@ -484,6 +528,22 @@ public interface WalletUiController {
      * comparing it against their balance would otherwise conclude the wallet had
      * lost a transaction.
      */
+    /**
+     * A scan in flight, or {@link #idle()} when none is. Blocks are absolute
+     * chain heights so the screen can name where the scan has got to, which is
+     * what distinguishes slow progress from a stall.
+     */
+    record HistoryScanView(long currentBlock, long tipBlock, int percent) {
+        public static HistoryScanView idle() {
+            return new HistoryScanView(0, 0, -1);
+        }
+
+        /** A scan is running only when the node has told us how far it reaches. */
+        public boolean scanning() {
+            return percent >= 0 && tipBlock > 0;
+        }
+    }
+
     record HistoryPage(List<TxItem> items, boolean localOnly) {
         public HistoryPage {
             items = items == null ? List.of() : List.copyOf(items);

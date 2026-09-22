@@ -59,7 +59,7 @@ final class HardwareSendService {
 
     Draft buildPayment(YanoNodeBackend backend, WalletNetwork network,
                        StoredWallet profile, String toAddress, BigInteger lovelace, String memo) {
-        List<Utxo> available = backend.utxoSupplier().getAll(profile.baseAddress()).stream()
+        List<Utxo> available = backend.selectionUtxoSupplier().getAll(profile.baseAddress()).stream()
                 .filter(u -> u.getAmount().size() == 1 && "lovelace".equals(u.getAmount().get(0).getUnit()))
                 .sorted(Comparator.comparing((Utxo u) -> u.getAmount().get(0).getQuantity()).reversed())
                 .toList();
@@ -142,7 +142,7 @@ final class HardwareSendService {
         String cclName = "0x" + nameHex;
         BigInteger recipientAda = BigInteger.valueOf(1_500_000);
 
-        Utxo utxo = backend.utxoSupplier().getAll(profile.baseAddress()).stream()
+        Utxo utxo = backend.selectionUtxoSupplier().getAll(profile.baseAddress()).stream()
                 .filter(u -> u.getAmount().stream()
                         .allMatch(a -> "lovelace".equals(a.getUnit()) || unit.equals(a.getUnit())))
                 .filter(u -> u.getAmount().stream()

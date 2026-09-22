@@ -6,11 +6,11 @@ import com.bloxbean.cardano.client.api.UtxoSupplier;
 import com.bloxbean.cardano.client.backend.api.BackendService;
 import com.bloxbean.cardano.client.backend.api.DefaultProtocolParamsSupplier;
 import com.bloxbean.cardano.client.backend.api.DefaultTransactionProcessor;
-import com.bloxbean.cardano.client.backend.api.DefaultUtxoSupplier;
 import com.bloxbean.cardano.client.backend.blockfrost.service.BFBackendService;
 import com.bloxbean.cardano.yano.wallet.core.config.WalletNetwork;
 
 import java.util.Objects;
+import java.nio.file.Path;
 
 /**
  * Wallet-side view of a local Yano node: cardano-client-lib suppliers backed
@@ -28,17 +28,24 @@ public class YanoNodeBackend {
     private final YanoNodeClient nodeClient;
     private final BackendService backendService;
     private final UtxoSupplier utxoSupplier;
+    private final UtxoSupplier selectionUtxoSupplier;
     private final ProtocolParamsSupplier protocolParamsSupplier;
     private final TransactionProcessor transactionProcessor;
     private final YanoNodePorts ports;
+    private final PendingInputs pendingInputs;
 
     private YanoNodeBackend(WalletNetwork network, YanoNodeClient nodeClient, BackendService backendService) {
         this.network = network;
         this.nodeClient = nodeClient;
         this.backendService = backendService;
-        this.utxoSupplier = new DefaultUtxoSupplier(backendService.getUtxoService());
+        this.utxoSupplier = new YanoUtxoSupplier(backendService.getUtxoService(), nodeClient);
+        this.pendingInputs = new PendingInputs();
+        this.selectionUtxoSupplier = nodeClient.isBlockfrostFlavor() ? utxoSupplier
+                : new YanoUtxoSupplier(backendService.getUtxoService(), nodeClient, pendingInputs);
         this.protocolParamsSupplier = new DefaultProtocolParamsSupplier(backendService.getEpochService());
-        this.transactionProcessor = new DefaultTransactionProcessor(backendService.getTransactionService());
+        this.transactionProcessor = nodeClient.isBlockfrostFlavor()
+                ? new DefaultTransactionProcessor(backendService.getTransactionService())
+                : new YanoTransactionProcessor(backendService.getTransactionService(), pendingInputs, nodeClient);
         this.ports = new YanoNodePorts(nodeClient);
     }
 
@@ -75,6 +82,16 @@ public class YanoNodeBackend {
 
     public UtxoSupplier utxoSupplier() {
         return utxoSupplier;
+    }
+
+    /** Transaction-building view; confirmed balances must use {@link #utxoSupplier()}. */
+    public UtxoSupplier selectionUtxoSupplier() {
+        return selectionUtxoSupplier;
+    }
+
+    /** Call before exposing the connection to transaction builders/submission. */
+    public void persistPendingInputs(Path file) {
+        if (!nodeClient.isBlockfrostFlavor()) pendingInputs.persistAt(file);
     }
 
     public ProtocolParamsSupplier protocolParamsSupplier() {

@@ -51,7 +51,7 @@ public final class WatchOnlyWallet implements Wallet {
         return new WatchOnlyWallet(network, HexUtil.decodeHexString(accountXpubHex), accountNo);
     }
 
-    private HdPublicKey childKey(int role, int index) {
+    HdPublicKey childKey(int role, int index) {
         return cip1852.getPublicKeyFromAccountPubKey(accountXpub, role, index);
     }
 
@@ -60,6 +60,10 @@ public final class WatchOnlyWallet implements Wallet {
     @Override
     public Address getBaseAddress(int index) {
         return AddressProvider.getBaseAddress(childKey(ROLE_EXTERNAL, index), childKey(ROLE_STAKE, STAKE_INDEX), network);
+    }
+
+    public Address getChangeAddress(int index) {
+        return AddressProvider.getBaseAddress(childKey(1, index), childKey(ROLE_STAKE, STAKE_INDEX), network);
     }
 
     @Override

@@ -8,7 +8,15 @@ public record WalletBalance(
         int addressCount,
         int utxoCount,
         List<WalletUtxoView> utxos,
-        List<WalletAssetBalance> assets) {
+        List<WalletAssetBalance> assets,
+        String scanWarning) {
+
+    public boolean complete() { return scanWarning == null; }
+
+    public WalletBalance(BigInteger lovelace, int addressCount, int utxoCount,
+                         List<WalletUtxoView> utxos, List<WalletAssetBalance> assets) {
+        this(lovelace, addressCount, utxoCount, utxos, assets, null);
+    }
 
     public WalletBalance {
         lovelace = lovelace == null ? BigInteger.ZERO : lovelace;

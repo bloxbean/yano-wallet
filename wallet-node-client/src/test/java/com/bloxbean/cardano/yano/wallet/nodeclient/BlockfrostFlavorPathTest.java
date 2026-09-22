@@ -4,9 +4,11 @@ import com.bloxbean.cardano.yano.wallet.core.service.HistoryPort;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.io.TempDir;
 
 import java.io.IOException;
 import java.math.BigInteger;
+import java.nio.file.Path;
 import java.util.List;
 
 import static org.assertj.core.api.Assertions.assertThat;
@@ -39,6 +41,9 @@ class BlockfrostFlavorPathTest {
     private static final String DREP = "drep1yfmk9nxq";
 
     private StubYanoNode node;
+
+    @TempDir
+    Path temporaryDirectory;
 
     @BeforeEach
     void setUp() throws IOException {
@@ -85,6 +90,21 @@ class BlockfrostFlavorPathTest {
                 .satisfies(tx -> assertThat(tx.txHash()).isEqualTo("aa11"));
         assertThat(node.requests())
                 .noneMatch(request -> request.path().contains("/accounts/"));
+    }
+
+    @Test
+    void yaciStoreNeverUsesYanoWalletIndexEndpoints() {
+        node.on("/api/v1/addresses/" + ADDRESS + "/transactions", addressTxs());
+        YanoNodeClient client = new YanoNodeClient(node.baseUrl(), true);
+        YanoNodePorts ports = new YanoNodePorts(client);
+
+        ports.enableScanHistory(temporaryDirectory.resolve("scan-history"));
+        assertThat(client.isAddressUsed(ADDRESS)).isTrue();
+        assertThat(ports.walletTransactions(STAKE, ADDRESS, 1, 10, true)).hasSize(1);
+
+        assertThat(node.requests()).allMatch(request ->
+                request.path().contains("/addresses/")
+                        && request.path().contains("/transactions"));
     }
 
     @Test

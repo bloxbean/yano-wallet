@@ -107,7 +107,7 @@ public interface StoredWalletRepository {
      * @param addressUsed probes the chain for an address's history — supplied by
      *                    the caller so this layer stays node-agnostic
      * @param maxAccounts hard stop on how many indexes to probe
-     * @param gapLimit    addresses probed per account before calling it unused
+     * @param gapLimit    addresses probed on each payment chain before calling an account unused
      * @throws com.bloxbean.cardano.yano.wallet.core.vault.WalletVaultException
      *         if the seed is unknown, is a hardware wallet (its accounts live on
      *         the device), or the passphrase is wrong

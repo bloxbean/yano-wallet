@@ -108,7 +108,7 @@ public class SendScreen implements Shell.Screen {
                 toField.clear();
                 amountField.clear();
                 memoField.clear();
-            });
+            }, this::review);
         }, error -> {
             reviewButton.setDisable(false);
             Ui.toast(overlay, "Draft failed: " + error.getMessage(), true);
@@ -126,7 +126,8 @@ public class SendScreen implements Shell.Screen {
         Ui.onFx(controller.balance(), balance -> {
             AssetOption previous = assetPicker.getValue();
             List<AssetOption> options = new ArrayList<>();
-            options.add(new AssetOption("lovelace", "ADA", "₳ " + balance.ada()));
+            options.add(new AssetOption("lovelace", "ADA", "₳ " + balance.ada()
+                    + (balance.scanWarning() == null ? "" : " (known balance; scan incomplete)")));
             for (WalletUiController.AssetItem asset : balance.assets()) {
                 options.add(new AssetOption(asset.unit(), assetLabel(asset.unit()), asset.quantity()));
             }
@@ -161,4 +162,3 @@ public class SendScreen implements Shell.Screen {
         return unit.length() > 14 ? unit.substring(0, 14) + "…" : unit;
     }
 }
-

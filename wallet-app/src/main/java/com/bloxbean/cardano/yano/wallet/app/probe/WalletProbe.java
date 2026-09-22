@@ -130,9 +130,11 @@ public final class WalletProbe {
     private static WalletService walletService(FileStoredWalletRepository repository, WalletNetwork network,
                                                String baseUrl, Map<String, String> opts) {
         YanoNodeBackend backend = YanoNodeBackend.connectVerified(network, baseUrl);
+        backend.persistPendingInputs(dataDirOf(opts, network).resolve("pending-inputs.json"));
         return new WalletService(
                 repository,
                 backend.utxoSupplier(),
+                backend.selectionUtxoSupplier(),
                 backend.protocolParamsSupplier(),
                 backend.transactionProcessor(),
                 new FilePendingTransactionStore(dataDirOf(opts, network).resolve("pending-transactions.json")),
@@ -149,6 +151,8 @@ public final class WalletProbe {
                 "ada", new BigDecimal(balance.lovelace()).movePointLeft(6).toPlainString(),
                 "utxoCount", balance.utxoCount(),
                 "addressesScanned", balance.addressCount(),
+                "scanComplete", balance.complete(),
+                "scanWarning", balance.scanWarning(),
                 "assets", balance.assets().size());
     }
 

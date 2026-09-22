@@ -1,12 +1,15 @@
 package com.bloxbean.cardano.yano.wallet.core.tx;
 
 import com.bloxbean.cardano.client.account.Account;
+import com.bloxbean.cardano.client.crypto.Blake2bUtil;
+import com.bloxbean.cardano.client.crypto.config.CryptoConfiguration;
 import com.bloxbean.cardano.client.address.Address;
 import com.bloxbean.cardano.client.cip.cip30.CIP30DataSigner;
 import com.bloxbean.cardano.client.cip.cip30.DataSignError;
 import com.bloxbean.cardano.client.cip.cip30.DataSignature;
 import com.bloxbean.cardano.client.common.cbor.CborSerializationUtil;
 import com.bloxbean.cardano.client.transaction.TransactionSigner;
+import com.bloxbean.cardano.client.crypto.bip32.HdKeyPair;
 import com.bloxbean.cardano.client.transaction.spec.Transaction;
 import com.bloxbean.cardano.client.transaction.spec.TransactionBody;
 import com.bloxbean.cardano.client.transaction.spec.TransactionWitnessSet;
@@ -40,6 +43,17 @@ public final class DappSigner {
     }
 
     public static String witnessSetHex(Account account, String txHex, boolean partialSign) {
+        Transaction transaction;
+        try { transaction = Transaction.deserialize(HexUtil.decodeHexString(txHex)); }
+        catch (Exception e) { throw new IllegalArgumentException("Invalid transaction CBOR", e); }
+        List<HdKeyPair> keys = new ArrayList<>();
+        keys.add(account.hdKeyPair());
+        if (needsStakeKey(account, transaction.getBody())) keys.add(account.stakeHdKeyPair());
+        return witnessSetHex(keys, txHex);
+    }
+
+    /** Sign with only the approved keys, preserving the exact transaction body bytes. */
+    public static String witnessSetHex(List<HdKeyPair> keys, String txHex) {
         byte[] txBytes = HexUtil.decodeHexString(txHex);
         Transaction tx;
         try {
@@ -50,6 +64,7 @@ public final class DappSigner {
 
         // Snapshot any witnesses already on the tx (script/other signers) so we
         // return only the ones WE add.
+        verifiedWitnessHashes(tx, txBytes);
         Set<String> preexisting = vkeyHexes(tx);
 
         // Sign the ORIGINAL bytes, never a re-encoding of them.
@@ -68,9 +83,12 @@ public final class DappSigner {
         // TransactionSigner.sign(byte[], …) takes the body slice out of the bytes it
         // was handed, hashes that, and splices the witness in without touching the
         // body — so whatever the dApp encoded is what gets signed.
-        byte[] signedBytes = TransactionSigner.INSTANCE.sign(txBytes, account.hdKeyPair());
-        if (needsStakeKey(account, tx.getBody())) {
-            signedBytes = TransactionSigner.INSTANCE.sign(signedBytes, account.stakeHdKeyPair());
+        byte[] signedBytes = txBytes;
+        Set<String> addedKeys = new HashSet<>();
+        for (HdKeyPair key : keys) {
+            String publicKey = HexUtil.encodeHexString(key.getPublicKey().getKeyData());
+            if (!preexisting.contains(publicKey) && addedKeys.add(publicKey))
+                signedBytes = TransactionSigner.INSTANCE.sign(signedBytes, key);
         }
 
         // The body must be identical to what we were given. This cannot fail with
@@ -143,7 +161,7 @@ public final class DappSigner {
      * while an extra witness breaks every ordinary transaction whose fee was
      * computed exactly.
      */
-    private static boolean needsStakeKey(Account account, TransactionBody body) {
+    static boolean needsStakeKey(Account account, TransactionBody body) {
         String stakeKeyHash;
         try {
             stakeKeyHash = HexUtil.encodeHexString(
@@ -189,6 +207,20 @@ public final class DappSigner {
 
     private static <T> List<T> orEmpty(List<T> list) {
         return list == null ? List.of() : list;
+    }
+
+    /** Existing witnesses count only if they verify against the original body. */
+    static Set<String> verifiedWitnessHashes(Transaction tx, byte[] bytes) {
+        Set<String> hashes = new HashSet<>();
+        byte[] bodyHash = HexUtil.decodeHexString(TransactionUtil.getTxHash(bytes));
+        if (tx.getWitnessSet() != null && tx.getWitnessSet().getVkeyWitnesses() != null)
+            for (VkeyWitness witness : tx.getWitnessSet().getVkeyWitnesses()) {
+                if (!CryptoConfiguration.INSTANCE.getSigningProvider()
+                        .verify(witness.getSignature(), bodyHash, witness.getVkey()))
+                    throw new IllegalArgumentException("Invalid pre-existing transaction signature");
+                hashes.add(HexUtil.encodeHexString(Blake2bUtil.blake2bHash224(witness.getVkey())));
+            }
+        return hashes;
     }
 
     private static Set<String> vkeyHexes(Transaction tx) {

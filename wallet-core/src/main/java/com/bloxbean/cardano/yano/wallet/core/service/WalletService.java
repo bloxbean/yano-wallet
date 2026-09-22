@@ -7,6 +7,12 @@ import com.bloxbean.cardano.client.api.model.Amount;
 import com.bloxbean.cardano.client.api.model.Result;
 import com.bloxbean.cardano.client.util.HexUtil;
 import com.bloxbean.cardano.yano.wallet.core.tx.PendingTransaction;
+import com.bloxbean.cardano.yano.wallet.core.tx.DappSigner;
+import com.bloxbean.cardano.yano.wallet.core.tx.DappSignerSearch;
+import com.bloxbean.cardano.yano.wallet.core.wallet.WalletAddresses;
+import com.bloxbean.cardano.yano.wallet.core.wallet.WalletAddressScanner;
+import com.bloxbean.cardano.client.crypto.bip32.HdKeyPair;
+import com.bloxbean.cardano.client.transaction.util.TransactionUtil;
 import com.bloxbean.cardano.yano.wallet.core.tx.PendingTransactionStatus;
 import com.bloxbean.cardano.yano.wallet.core.tx.PendingTransactionStore;
 import com.bloxbean.cardano.yano.wallet.core.tx.QuickAdaTxDraft;
@@ -24,6 +30,8 @@ import com.bloxbean.cardano.yano.wallet.core.wallet.WalletBalanceService;
 import java.math.BigInteger;
 import java.util.ArrayList;
 import java.util.LinkedHashMap;
+import java.util.LinkedHashSet;
+import java.util.Set;
 import java.util.List;
 import java.util.Map;
 import java.util.Objects;
@@ -37,6 +45,7 @@ import java.util.Optional;
 public class WalletService {
     private final StoredWalletRepository repository;
     private final UtxoSupplier utxoSupplier;
+    private final UtxoSupplier selectionUtxoSupplier;
     private final ProtocolParamsSupplier protocolParamsSupplier;
     private final TransactionProcessor transactionProcessor;
     private final PendingTransactionStore pendingStore;
@@ -51,8 +60,20 @@ public class WalletService {
                          TransactionProcessor transactionProcessor,
                          PendingTransactionStore pendingStore,
                          NodeStatusPort nodeStatusPort) {
+        this(repository, utxoSupplier, utxoSupplier, protocolParamsSupplier,
+                transactionProcessor, pendingStore, nodeStatusPort);
+    }
+
+    public WalletService(StoredWalletRepository repository,
+                         UtxoSupplier utxoSupplier,
+                         UtxoSupplier selectionUtxoSupplier,
+                         ProtocolParamsSupplier protocolParamsSupplier,
+                         TransactionProcessor transactionProcessor,
+                         PendingTransactionStore pendingStore,
+                         NodeStatusPort nodeStatusPort) {
         this.repository = Objects.requireNonNull(repository, "repository is required");
         this.utxoSupplier = Objects.requireNonNull(utxoSupplier, "utxoSupplier is required");
+        this.selectionUtxoSupplier = Objects.requireNonNull(selectionUtxoSupplier, "selectionUtxoSupplier is required");
         this.protocolParamsSupplier =
                 Objects.requireNonNull(protocolParamsSupplier, "protocolParamsSupplier is required");
         this.transactionProcessor = Objects.requireNonNull(transactionProcessor, "transactionProcessor is required");
@@ -394,6 +415,8 @@ public class WalletService {
     /** An unlocked wallet bound to the service's node backend. */
     public final class Session {
         private final UnlockedWallet unlocked;
+        // Public paths observed in this unlock session. Never persisted with private keys.
+        private final Set<DappSignerSearch.KeyPath> knownSignerPaths = new LinkedHashSet<>();
 
         private Session(UnlockedWallet unlocked) {
             this.unlocked = unlocked;
@@ -404,11 +427,23 @@ public class WalletService {
         }
 
         public WalletBalance balance() {
-            return balanceService.scan(unlocked.wallet(), utxoSupplier);
+            var scan = new WalletAddressScanner().scan(unlocked.wallet(), utxoSupplier);
+            for (var funded : scan.fundedAddresses())
+                funded.address().getDerivationPath().ifPresent(path ->
+                        rememberSigningPath(path.getRole().getValue(), path.getIndex().getValue()));
+            return balanceService.balance(scan);
         }
 
         public WalletAccountView addresses(int receiveAddressCount) {
-            return addressService.accountView(unlocked.profile(), unlocked.wallet(), receiveAddressCount);
+            var view = addressService.accountView(unlocked.profile(), unlocked.wallet(), receiveAddressCount);
+            for (int index = 0; index < receiveAddressCount; index++) rememberSigningPath(0, index);
+            return view;
+        }
+
+        public WalletAddressService.AddressDetails addressDetails(int index) {
+            var details = addressService.addressDetails(unlocked.wallet(), index);
+            rememberSigningPath(0, index);
+            return details;
         }
 
         /** Builds and signs a payment without submitting — for review/approval UIs. */
@@ -416,7 +451,7 @@ public class WalletService {
                                             List<Amount> nativeAssets, String message) {
             return txService.buildSignedDraft(
                     unlocked.wallet(),
-                    utxoSupplier,
+                    selectionUtxoSupplier,
                     protocolParamsSupplier,
                     transactionProcessor,
                     receiverAddress,
@@ -428,7 +463,7 @@ public class WalletService {
         public QuickAdaTxDraft draftPayments(List<QuickTxPayment> payments, String message) {
             return txService.buildSignedDraft(
                     unlocked.wallet(),
-                    utxoSupplier,
+                    selectionUtxoSupplier,
                     protocolParamsSupplier,
                     transactionProcessor,
                     payments,
@@ -532,21 +567,64 @@ public class WalletService {
          * wallet's witness-set hex. Software wallets only (hardware = M4).
          */
         public String signDappTx(String txHex, boolean partialSign) {
-            if (unlocked.profile().isHardware()) {
-                throw new WalletServiceException("dApp signing with a hardware wallet isn't supported yet.");
-            }
-            return com.bloxbean.cardano.yano.wallet.core.tx.DappSigner.witnessSetHex(
-                    unlocked.wallet().getAccountAtIndex(0), txHex, partialSign);
+            return signDappTx(txHex, partialSign, reviewDappTx(txHex, DappSignerSearch.DEFAULT_LIMIT));
         }
 
-        /** Signs data for a dApp (CIP-30 signData / CIP-8). Software wallets only. */
+        /** Remember a public receive/change path generated by this session (not supplied by a dApp). */
+        public synchronized void rememberSigningPath(int role, int index) {
+            var path = new DappSignerSearch.KeyPath(role, index);
+            if (!knownSignerPaths.contains(path) && knownSignerPaths.size() >= DappSignerSearch.MAX_KNOWN_PATHS)
+                throw new WalletServiceException("Too many known signing paths in this session");
+            knownSignerPaths.add(path);
+        }
+
+        /** Discover transaction keys without signing or consulting address-use history. */
+        public DappSignerSearch.Plan reviewDappTx(String txHex, int limit) {
+            if (unlocked.profile().isHardware())
+                throw new WalletServiceException("Bounded software signer search does not support hardware wallets.");
+            List<DappSignerSearch.KeyPath> known;
+            synchronized (this) { known = List.copyOf(knownSignerPaths); }
+            return DappSignerSearch.transaction(unlocked.wallet(), txHex, selectionUtxoSupplier, known, limit);
+        }
+
+        /** Sign only the reviewed paths and exact body, after the connector obtains user approval. */
+        public String signDappTx(String txHex, boolean partialSign, DappSignerSearch.Plan plan) {
+            if (unlocked.profile().isHardware() || plan.account() != unlocked.profile().accountIndex()
+                    || !plan.txHash().equals(TransactionUtil.getTxHash(HexUtil.decodeHexString(txHex))))
+                throw new WalletServiceException("Signing review no longer matches this account or transaction.");
+            if (!partialSign && !plan.unmatched().isEmpty())
+                throw new WalletServiceException("Cannot fully sign: unmatched signer hashes remain within the bounded search.");
+            if (!plan.hasSigners()) throw new WalletServiceException("No matching signing keys found in this account.");
+            List<HdKeyPair> keys = new ArrayList<>();
+            for (var path : plan.paymentPaths())
+                keys.add(WalletAddresses.account(unlocked.wallet(), path.role(), path.index()).hdKeyPair());
+            if (plan.stake()) keys.add(unlocked.wallet().getAccountAtIndex(0).stakeHdKeyPair());
+            return DappSigner.witnessSetHex(keys, txHex);
+        }
+
+        /** Discover the requested data key within this selected HD account. */
+        public DappSignerSearch.DataPlan reviewDappData(byte[] address, byte[] payload, int limit) {
+            if (unlocked.profile().isHardware()) throw new WalletServiceException("dApp data signing with a hardware wallet isn't supported yet.");
+            List<DappSignerSearch.KeyPath> known;
+            synchronized (this) { known = List.copyOf(knownSignerPaths); }
+            return DappSignerSearch.data(unlocked.wallet(), address, payload, known, limit);
+        }
+
+        /** Signs with only the reviewed key; callers must obtain consent for this plan. */
         public com.bloxbean.cardano.client.cip.cip30.DataSignature signDappData(byte[] addressBytes,
-                                                                                byte[] payloadBytes) {
-            if (unlocked.profile().isHardware()) {
-                throw new WalletServiceException("dApp signing with a hardware wallet isn't supported yet.");
-            }
-            return com.bloxbean.cardano.yano.wallet.core.tx.DappSigner.signData(
-                    unlocked.wallet().getAccountAtIndex(0), addressBytes, payloadBytes);
+                byte[] payloadBytes, DappSignerSearch.DataPlan plan) {
+            if (unlocked.profile().isHardware() || plan.account() != unlocked.profile().accountIndex()
+                    || !plan.hasSigner() || !plan.address().equals(HexUtil.encodeHexString(addressBytes))
+                    || !plan.payload().equals(HexUtil.encodeHexString(payloadBytes)))
+                throw new WalletServiceException("Data signing review no longer matches this account or request.");
+            var account = plan.stake() ? unlocked.wallet().getAccountAtIndex(0)
+                    : WalletAddresses.account(unlocked.wallet(), plan.paymentPath().role(), plan.paymentPath().index());
+            return com.bloxbean.cardano.yano.wallet.core.tx.DappSigner.signData(account, addressBytes, payloadBytes);
+        }
+
+        /** Default bounded discovery for non-connector callers that already obtained consent. */
+        public com.bloxbean.cardano.client.cip.cip30.DataSignature signDappData(byte[] address, byte[] payload) {
+            return signDappData(address, payload, reviewDappData(address, payload, DappSignerSearch.DEFAULT_LIMIT));
         }
 
         /** Builds and signs a withdrawal of all available rewards. */
@@ -612,7 +690,7 @@ public class WalletService {
                                                String summary,
                                                com.bloxbean.cardano.client.function.TxSigner extraSigner) {
             var builder = new com.bloxbean.cardano.client.quicktx.QuickTxBuilder(
-                    utxoSupplier, protocolParamsSupplier, transactionProcessor);
+                    selectionUtxoSupplier, protocolParamsSupplier, transactionProcessor);
             var composed = builder.compose(tx)
                     .feePayer(signerAccount.baseAddress())
                     .withSigner(com.bloxbean.cardano.client.function.helper.SignerProviders
@@ -659,6 +737,9 @@ public class WalletService {
             Result<String> result;
             try {
                 result = transactionProcessor.submitTransaction(HexUtil.decodeHexString(draft.cborHex()));
+            } catch (MempoolConflictException e) {
+                pendingStore.save(pending.markFailed(e.getMessage()));
+                throw e;
             } catch (Exception e) {
                 throw new RetryableSubmitException("Transaction submit failed: " + e.getMessage(), e);
             }
