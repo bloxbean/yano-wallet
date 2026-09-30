@@ -1,6 +1,7 @@
 package com.bloxbean.cardano.yano.wallet.nodeclient;
 
 import com.bloxbean.cardano.client.address.Address;
+import com.bloxbean.cardano.yano.wallet.core.service.HistoryPort.HistoryNotSupportedException;
 import com.bloxbean.cardano.yano.wallet.core.service.HistoryPort.TxRef;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
@@ -118,6 +119,103 @@ class WalletScanHistoryTest {
             node.on("/api/v1/scan", stream(1, record + "\n"));
             assertThat(history(node).transactions(STAKE, 1, 10, false)).extracting(TxRef::txHash).containsExactly(hash(1));
             assertThat(saved().path("current").path("outputs").size()).isEqualTo(1);
+        }
+    }
+
+    @Test void aNodeThatCannotServeScansIsTreatedAsHavingNoIndex() throws Exception {
+        // 503, not 404: pre16 carries the scan route but answers 503 when the
+        // index or UTxO state is off, or the index needs a fresh sync. Reported
+        // as an error it would fill the History screen with a failure on every
+        // refresh instead of falling back (ADR-043). A chainstate synced before
+        // the index existed answers 400 instead — see the origin-scan tests.
+        try (StubYanoNode node = new StubYanoNode()) {
+            node.on("/api/v1/scan", request -> new StubYanoNode.Response(503, "application/json",
+                    "{\"error\":\"Wallet scan requires UTxO state\"}"));
+            assertThatThrownBy(() -> history(node).transactions(STAKE, 1, 10, false))
+                    .isInstanceOf(HistoryNotSupportedException.class)
+                    .hasMessageContaining("UTxO state");
+
+            node.on("/api/v1/scan", request -> new StubYanoNode.Response(503, "application/json",
+                    "{\"error\":\"Index disabled\",\"coverage\":{\"enabled\":false,\"completeFromOrigin\":false}}"));
+            assertThatThrownBy(() -> history(node).transactions(STAKE, 1, 10, false))
+                    .isInstanceOf(HistoryNotSupportedException.class);
+
+            // Enabled but never initialised: the node's own remedy is a fresh sync.
+            node.on("/api/v1/scan", request -> new StubYanoNode.Response(503, "application/json",
+                    "{\"error\":\"Index missing; enable before a fresh sync\","
+                            + "\"coverage\":{\"enabled\":true,\"completeFromOrigin\":false}}"));
+            assertThatThrownBy(() -> history(node).transactions(STAKE, 1, 10, false))
+                    .isInstanceOf(HistoryNotSupportedException.class)
+                    .hasMessageContaining("fresh sync");
+        }
+    }
+
+    @Test void aBusyNodeStaysAnErrorRatherThanLosingItsHistory() throws Exception {
+        // Each of these passes. Answering one with "this node keeps no history"
+        // would swap the node's real history for the local list — hiding
+        // transactions behind a permanent-sounding answer to a temporary state.
+        // The last two carry a coverage object and name the index, which is
+        // exactly why neither can decide the question on its own.
+        for (String body : new String[] {
+                "{\"error\":\"Scan concurrency limit reached\"}",
+                "{\"error\":\"Index is not at the applied canonical point\","
+                        + "\"coverage\":{\"enabled\":true,\"completeFromOrigin\":true}}",
+                "{\"error\":\"Contributor storage is closed or being replaced\","
+                        + "\"coverage\":{\"enabled\":true,\"completeFromOrigin\":false}}"}) {
+            try (StubYanoNode node = new StubYanoNode()) {
+                node.on("/api/v1/scan", request -> new StubYanoNode.Response(503, "application/json", body));
+                assertThatThrownBy(() -> history(node).transactions(STAKE, 1, 10, false))
+                        .as(body)
+                        .isInstanceOf(NodeClientException.class)
+                        .isNotInstanceOf(HistoryNotSupportedException.class)
+                        .hasMessageContaining("HTTP 503");
+            }
+        }
+    }
+
+    @Test void anIndexStartedAfterGenesisFallsBackForAScanFromOrigin() throws Exception {
+        // What every chainstate upgraded to an index-carrying node gets: the index
+        // starts at the block after it was switched on, so a scan from origin is
+        // refused with 400 on every refresh. There is no history to read — it
+        // falls back to the local list (ADR-043) instead of erroring forever.
+        try (StubYanoNode node = new StubYanoNode()) {
+            node.on("/api/v1/scan", request -> new StubYanoNode.Response(400, "application/json",
+                    "{\"error\":\"Requested range is outside complete filter coverage\"}"));
+            assertThatThrownBy(() -> history(node).transactions(STAKE, 1, 10, false))
+                    .isInstanceOf(HistoryNotSupportedException.class)
+                    .hasMessageContaining("start of the chain");
+            assertThat(mapper.readTree(node.requests().getLast().body()).path("after").path("blockNumber").asInt())
+                    .isEqualTo(-1);
+        }
+    }
+
+    @Test void anIndexBehindASavedCursorStaysAnError() throws Exception {
+        // Same 400, but from a cursor this node itself handed out: an index
+        // trailing it says the same thing and catches up. Falling back would
+        // replace the scanned history with the local list in the meantime.
+        try (StubYanoNode node = new StubYanoNode()) {
+            node.on("/api/v1/scan", stream(1, transaction(1, false)));
+            history(node).transactions(STAKE, 1, 10, false);
+            JsonNode before = saved();
+            node.on("/api/v1/scan", request -> new StubYanoNode.Response(400, "application/json",
+                    "{\"error\":\"Requested range is outside complete filter coverage\"}"));
+            assertThatThrownBy(() -> history(node).transactions(STAKE, 1, 10, false))
+                    .isInstanceOf(NodeClientException.class)
+                    .isNotInstanceOf(HistoryNotSupportedException.class)
+                    .hasMessageContaining("outside complete filter coverage");
+            assertThat(saved()).isEqualTo(before);
+        }
+    }
+
+    @Test void anyOtherRefusalOfAScanFromOriginStaysAnError() throws Exception {
+        // A malformed request is the wallet's bug, not the node's missing index.
+        try (StubYanoNode node = new StubYanoNode()) {
+            node.on("/api/v1/scan", request -> new StubYanoNode.Response(400, "application/json",
+                    "{\"error\":\"Unsupported scan version\"}"));
+            assertThatThrownBy(() -> history(node).transactions(STAKE, 1, 10, false))
+                    .isInstanceOf(NodeClientException.class)
+                    .isNotInstanceOf(HistoryNotSupportedException.class)
+                    .hasMessageContaining("Unsupported scan version");
         }
     }
 
