@@ -14,6 +14,7 @@ import java.nio.file.StandardCopyOption;
 import java.util.HashMap;
 import java.util.HashSet;
 import java.util.Map;
+import java.util.Optional;
 import java.util.Set;
 import java.util.regex.Pattern;
 
@@ -78,17 +79,29 @@ final class PendingInputs {
         try {
             Transaction tx = Transaction.deserialize(cbor);
             String hash = TransactionUtil.getTxHash(tx);
-            // Even an identical signed transaction must not be automatically submitted again.
             Set<String> inputs = new HashSet<>();
             tx.getBody().getInputs().forEach(i -> inputs.add(i.getTransactionId() + "#" + i.getIndex()));
-            Set<String> blocked = snapshot();
+            // Only a DIFFERENT transaction over these inputs is a conflict. Resending the
+            // identical signed transaction is how a submit with an unknown outcome is
+            // settled, and it cannot pay twice: the ledger applies a transaction at most
+            // once. Refusing it here made that retry fail, and the failure discarded a
+            // draft whose payment may already have gone.
+            Set<String> blocked = new HashSet<>();
+            reservations.forEach((owner, reservation) -> {
+                if (!owner.equals(hash)) blocked.addAll(reservation.inputs());
+            });
             if (inputs.stream().anyMatch(blocked::contains)) {
                 throw new MempoolConflictException("This wallet already submitted a transaction using these inputs. "
                         + "Wait for confirmation if no other confirmed funds are available.");
             }
-            Map<String, Reservation> next = new HashMap<>(reservations);
-            next.put(hash, new Reservation(tx.getBody().getTtl(), Set.copyOf(inputs)));
-            update(next); // Durable before the request can reach the node.
+            // A resend keeps its reservation as is. One learned from a node conflict
+            // (TTL 0, only the claimed input) is replaced by the transaction's own.
+            Reservation own = new Reservation(tx.getBody().getTtl(), Set.copyOf(inputs));
+            if (!own.equals(reservations.get(hash))) {
+                Map<String, Reservation> next = new HashMap<>(reservations);
+                next.put(hash, own);
+                update(next); // Durable before the request can reach the node.
+            }
             return hash;
         } catch (MempoolConflictException | UncheckedIOException e) {
             throw e;
@@ -100,6 +113,12 @@ final class PendingInputs {
     synchronized void release(String hash) {
         Map<String, Reservation> next = new HashMap<>(reservations);
         if (next.remove(hash) != null) update(next);
+    }
+
+    /** The transaction a node conflict names as already holding an input, if it names one. */
+    static Optional<String> claimant(String reason) {
+        var match = CLAIMED_INPUT.matcher(reason);
+        return match.find() ? Optional.of(match.group(1).toLowerCase(java.util.Locale.ROOT)) : Optional.empty();
     }
 
     /** Replace the rejected draft's reservation with the actual owner's reported input. */

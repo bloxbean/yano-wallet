@@ -2,6 +2,8 @@ package com.bloxbean.cardano.yano.wallet.nodeclient;
 
 import com.bloxbean.cardano.client.address.Address;
 import com.bloxbean.cardano.client.api.common.OrderEnum;
+import com.bloxbean.cardano.client.api.exception.ApiException;
+import com.bloxbean.cardano.client.transaction.util.TransactionUtil;
 import com.bloxbean.cardano.client.api.model.Utxo;
 import com.bloxbean.cardano.client.api.model.Amount;
 import com.bloxbean.cardano.client.api.model.ProtocolParams;
@@ -39,6 +41,26 @@ class PendingInputsTest {
                         .inputs(IntStream.range(0, count).mapToObj(i -> new TransactionInput(HASH, i)).toList())
                         .outputs(List.of()).fee(BigInteger.valueOf(200000)).ttl(1000).build())
                 .witnessSet(new TransactionWitnessSet()).build().serialize();
+    }
+
+    /** The same inputs in a different transaction — a stale draft, not a resend. */
+    static byte[] withTtl(byte[] cbor, long ttl) throws Exception {
+        Transaction transaction = Transaction.deserialize(cbor);
+        transaction.getBody().setTtl(ttl);
+        return transaction.serialize();
+    }
+
+    static StubYanoNode.Response unknownOutcome() {
+        return new StubYanoNode.Response(503, "text/plain", "unavailable");
+    }
+
+    static StubYanoNode.Response refused(String reason) {
+        return new StubYanoNode.Response(400, "application/json",
+                "{\"error\":\"Failed to submit transaction: " + reason + "\"}");
+    }
+
+    static long submits(StubYanoNode node) {
+        return node.requests().stream().filter(r -> r.path().contains("tx/submit")).count();
     }
 
     static String utxos(int first, int end) {
@@ -159,12 +181,127 @@ class PendingInputsTest {
             var backend = YanoNodeBackend.connect(WalletNetwork.PREPROD, node.baseUrl());
             assertThat(backend.transactionProcessor().submitTransaction(tx(1)).isSuccessful()).isFalse();
             assertThat(backend.selectionUtxoSupplier().getAll(ADDRESS)).isEmpty();
-            assertThatThrownBy(() -> backend.transactionProcessor().submitTransaction(tx(1)))
+            // A different transaction over the same input is a stale draft: refused
+            // before it reaches the node. (The identical one may be resent — below.)
+            assertThatThrownBy(() -> backend.transactionProcessor().submitTransaction(withTtl(tx(1), 2000)))
                     .isInstanceOf(MempoolConflictException.class);
             assertThat(node.requests().stream().filter(r -> r.path().contains("tx/submit"))).hasSize(1);
             status(node, 1001, 2);
             assertThat(backend.selectionUtxoSupplier().getAll(ADDRESS)).isEmpty();
             status(node, 1001, 0);
+            assertThat(backend.selectionUtxoSupplier().getAll(ADDRESS)).hasSize(1);
+        }
+    }
+
+    @Test void resendingTheSameTransactionAfterAnUnknownOutcomeReachesTheNode() throws Exception {
+        // The first answer was lost, so the payment may or may not have gone. The
+        // identical signed transaction is how that is settled: it cannot pay
+        // twice, and Yano answers one it already holds with 200 (DUPLICATE).
+        try (var node = new StubYanoNode()) {
+            status(node, 100, 0);
+            node.on(ROUTE, r -> StubYanoNode.Response.json(r.path().contains("page=1&") ? utxos(0, 1) : "[]"));
+            node.on("/api/v1/tx/submit", r -> unknownOutcome());
+            Path file = directory.resolve("pending-inputs.json");
+            var backend = YanoNodeBackend.connect(WalletNetwork.PREPROD, node.baseUrl());
+            backend.persistPendingInputs(file);
+            byte[] signed = tx(1);
+            String hash = TransactionUtil.getTxHash(signed);
+            assertThat(backend.transactionProcessor().submitTransaction(signed).isSuccessful()).isFalse();
+            String reserved = Files.readString(file);
+
+            node.on("/api/v1/tx/submit", "\"" + hash + "\"");
+            var resent = backend.transactionProcessor().submitTransaction(signed);
+
+            assertThat(resent.isSuccessful()).isTrue();
+            assertThat(resent.getValue()).isEqualTo(hash);
+            assertThat(submits(node)).isEqualTo(2);
+            // Accepted is not confirmed: the input stays out of selection, under
+            // the same reservation and TTL.
+            assertThat(backend.selectionUtxoSupplier().getAll(ADDRESS)).isEmpty();
+            assertThat(Files.readString(file)).isEqualTo(reserved);
+        }
+    }
+
+    @Test void resendOfATransactionAlreadyInABlockIsReportedAsSubmitted() throws Exception {
+        // The lost answer was an acceptance and the transaction has landed since,
+        // so the resend is refused for spending its own inputs. As a failure it
+        // would discard a payment that has gone, and a rebuild would pay again.
+        try (var node = new StubYanoNode()) {
+            status(node, 100, 0);
+            node.on("/api/v1/tx/submit", r -> unknownOutcome());
+            var backend = YanoNodeBackend.connect(WalletNetwork.PREPROD, node.baseUrl());
+            byte[] signed = tx(1);
+            String hash = TransactionUtil.getTxHash(signed);
+            assertThat(backend.transactionProcessor().submitTransaction(signed).isSuccessful()).isFalse();
+
+            node.on("/api/v1/txs/" + hash, "{\"hash\":\"" + hash + "\",\"block_height\":10,\"slot\":100}");
+            node.on("/api/v1/tx/submit", r -> refused("Transaction validation failed: UtxoNotFound " + HASH + "#0"));
+            var resent = backend.transactionProcessor().submitTransaction(signed);
+
+            assertThat(resent.isSuccessful()).isTrue();
+            assertThat(resent.getValue()).isEqualTo(hash);
+            assertThat(submits(node)).isEqualTo(2);
+        }
+    }
+
+    @Test void aRefusalThatCannotBeCheckedAgainstTheChainKeepsItsReservation() throws Exception {
+        // Refused, and the node cannot say whether the transaction is already in
+        // a block: an unknown outcome. Nothing is released, and the caller hears
+        // "retry" (a transport-style failure) rather than "this payment failed".
+        try (var node = new StubYanoNode()) {
+            status(node, 100, 0);
+            node.on(ROUTE, r -> StubYanoNode.Response.json(r.path().contains("page=1&") ? utxos(0, 1) : "[]"));
+            var backend = YanoNodeBackend.connect(WalletNetwork.PREPROD, node.baseUrl());
+            byte[] signed = tx(1);
+            String hash = TransactionUtil.getTxHash(signed);
+            node.on("/api/v1/tx/submit", r -> refused("Transaction validation failed: UtxoNotFound " + HASH + "#0"));
+            node.on("/api/v1/txs/" + hash, r -> new StubYanoNode.Response(503, "application/json",
+                    "{\"error\":\"UTxO state unavailable\"}"));
+
+            assertThatThrownBy(() -> backend.transactionProcessor().submitTransaction(signed))
+                    .isInstanceOf(ApiException.class).hasMessageContaining("could not be checked");
+
+            node.on("/api/v1/txs/" + hash, r -> new StubYanoNode.Response(404, "application/json", "{}"));
+            assertThat(backend.selectionUtxoSupplier().getAll(ADDRESS)).isEmpty();
+        }
+    }
+
+    @Test void aDefiniteRefusalOfATransactionNotOnChainReleasesItsInputs() throws Exception {
+        try (var node = new StubYanoNode()) {
+            status(node, 100, 0);
+            node.on(ROUTE, r -> StubYanoNode.Response.json(r.path().contains("page=1&") ? utxos(0, 1) : "[]"));
+            node.on("/api/v1/tx/submit", r -> refused("Transaction validation failed: ValueNotConserved"));
+            var backend = YanoNodeBackend.connect(WalletNetwork.PREPROD, node.baseUrl());
+
+            var result = backend.transactionProcessor().submitTransaction(tx(1));
+
+            assertThat(result.isSuccessful()).isFalse();
+            assertThat(result.code()).isEqualTo(400);
+            assertThat(backend.selectionUtxoSupplier().getAll(ADDRESS)).hasSize(1);
+            // Asked the chain before believing the refusal.
+            assertThat(node.requests()).anyMatch(r -> r.path().startsWith("/api/v1/txs/"));
+        }
+    }
+
+    @Test void aConflictClaimedByTheSameTransactionIsAlreadySubmitted() throws Exception {
+        // pre16 answers a duplicate 200 before it checks conflicts; a build that
+        // did not would name this very transaction as the claimant. Recorded as a
+        // conflict it would be marked failed, and its reservation lose its TTL.
+        try (var node = new StubYanoNode()) {
+            status(node, 100, 0);
+            node.on(ROUTE, r -> StubYanoNode.Response.json(r.path().contains("page=1&") ? utxos(0, 1) : "[]"));
+            var backend = YanoNodeBackend.connect(WalletNetwork.PREPROD, node.baseUrl());
+            byte[] signed = tx(1);
+            String hash = TransactionUtil.getTxHash(signed);
+            node.on("/api/v1/tx/submit", r -> refused("Mempool admission failed (CONFLICT): "
+                    + "regular input is already claimed by " + hash + ": " + HASH + "#0"));
+
+            var result = backend.transactionProcessor().submitTransaction(signed);
+
+            assertThat(result.isSuccessful()).isTrue();
+            assertThat(result.getValue()).isEqualTo(hash);
+            assertThat(backend.selectionUtxoSupplier().getAll(ADDRESS)).isEmpty();
+            status(node, 1001, 0); // Its own TTL (1000) still releases it.
             assertThat(backend.selectionUtxoSupplier().getAll(ADDRESS)).hasSize(1);
         }
     }

@@ -23,8 +23,9 @@ Lookup failures abort selection rather than returning partial funds.
 
 The Yano transaction processor parses regular inputs from the submitted CBOR and
 reserves them before sending the HTTP request. This covers software, hardware
-and dApp submissions through that processor. A stale draft using a reserved input
-is rejected locally before another request is made. Reference inputs are not
+and dApp submissions through that processor. A stale draft — a different
+transaction using a reserved input — is rejected locally before another request
+is made. Reference inputs are not
 reserved. Pending outputs returned by the node are eligible, including change for subsequent
 sends. The wallet does not construct or resubmit parent transactions itself.
 
@@ -46,7 +47,15 @@ Before selection/submission the tracker refreshes against the node:
 - Passing the transaction's upper validity slot also releases reservations once
   the index is caught up. There is no arbitrary wall-clock unlock.
 - Transport errors and HTTP 5xx responses have uncertain outcomes, so reservations
-  remain until confirmation or expiry. Lookup failures never unlock inputs.
+  remain until confirmation or expiry. Lookup failures never unlock inputs. A wallet
+  send keeps its signed draft for a retry in both cases; only a 4xx marks it failed.
+- Resending the identical signed transaction is not a conflict — only a different
+  transaction over the same inputs is. That resend is how an uncertain outcome is
+  settled, and it cannot pay twice. Yano answers a transaction already in its
+  mempool with 200. One already in a block is refused for spending its own inputs,
+  so before any 4xx releases inputs the wallet asks `GET /txs/{hash}`; if the
+  transaction is there, the send is reported as submitted. If that lookup fails,
+  the outcome stays unknown: the reservation is kept and the send can be retried.
 
 The history UI's existing five-minute “failed” timeout is only an advisory guess,
 not a definite node rejection, and does not release input reservations. The current

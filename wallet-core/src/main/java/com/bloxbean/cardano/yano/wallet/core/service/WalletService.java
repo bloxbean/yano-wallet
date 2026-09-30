@@ -730,6 +730,12 @@ public class WalletService {
          * and is terminal; a transport failure (node briefly unreachable)
          * throws {@link RetryableSubmitException} WITHOUT a pending record so
          * the caller can retry the already-signed draft.
+         *
+         * <p>Only a 4xx is a rejection. Any other unsuccessful answer — a 5xx,
+         * or none at all — leaves the outcome as unknown as a dropped
+         * connection: the node may have taken the transaction. Marking that
+         * FAILED discards the draft while its payment may still land, and a
+         * rebuild then pays again from other funds.
          */
         public String submit(QuickAdaTxDraft draft) {
             PendingTransaction pending = PendingTransaction.fromDraft(
@@ -744,6 +750,10 @@ public class WalletService {
                 throw new RetryableSubmitException("Transaction submit failed: " + e.getMessage(), e);
             }
             if (!result.isSuccessful()) {
+                if (result.code() < 400 || result.code() >= 500) {
+                    throw new RetryableSubmitException("Transaction submit failed: the node did not confirm "
+                            + "receiving it (HTTP " + result.code() + ": " + result.getResponse() + ")", null);
+                }
                 pendingStore.save(pending.markFailed(String.valueOf(result.getResponse())));
                 throw new WalletServiceException("Transaction rejected: " + result.getResponse());
             }
