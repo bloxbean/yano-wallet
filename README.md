@@ -86,7 +86,7 @@ is baked into the jar.
 The pinned version lives in `gradle.properties`:
 
 ```properties
-yanoVersion = 0.1.0-pre13
+yanoVersion = 0.1.0-pre16
 ```
 
 Resolution order (first hit wins), which mirrors what `NodeLocator` does at
