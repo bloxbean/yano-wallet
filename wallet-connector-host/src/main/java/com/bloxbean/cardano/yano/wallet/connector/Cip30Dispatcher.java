@@ -152,7 +152,7 @@ public final class Cip30Dispatcher {
     private Object signData(JsonNode params, String origin) {
         String addr = textParam(params, "addr");
         String payload = textParam(params, "payload");
-        if (!approvals.confirmSignData(origin, addr)) {
+        if (!approvals.confirmSignData(origin, addr, payload)) {
             throw Cip30Exception.refused("The user declined to sign.");
         }
         Cip30Wallet.DataSignature sig = wallet.signData(addr, payload);

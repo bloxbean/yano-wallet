@@ -21,7 +21,7 @@ import java.util.Map;
  *
  * <pre>
  * Options:
- *   --network=devnet|preview|preprod|mainnet   (default preprod)
+ *   --network=devnet|yaci-devkit|preview|preprod|mainnet   (default preprod)
  *   --base-url=http://localhost:7070/api/v1/
  *   --data-dir=~/.yano-wallet
  *   --auto-connect                             reconnect to the saved node on launch
@@ -110,8 +110,11 @@ public final class YanoWalletApp {
             WalletNetwork network = WalletNetwork.fromId(opts.get("network"));
             WalletConnectionConfig config;
             if ("external".equalsIgnoreCase(nodeMode)) {
+                String defaultUrl = network.defaultBaseUrl() == null
+                        ? "http://localhost:7070/api/v1/"
+                        : network.defaultBaseUrl();
                 config = WalletConnectionConfig.external(network,
-                        opts.getOrDefault("base-url", "http://localhost:7070/api/v1/"));
+                        opts.getOrDefault("base-url", defaultUrl));
             } else if (opts.containsKey("managed-port")) {
                 // Pin the managed node's REST port (e.g. to hit the devnet faucet).
                 config = WalletConnectionConfig.managed(network, Integer.parseInt(opts.get("managed-port")));

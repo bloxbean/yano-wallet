@@ -30,8 +30,12 @@ public interface Cip30Approvals {
 
     /**
      * Prompts the user to approve a CIP-8 data signature by the key for
-     * {@code address}. Separate from {@link #confirmSign} because signing data
-     * moves no value: there is nothing to simulate and nothing to diff.
+     * {@code address}. Separate from {@link #confirmSign} because data signatures may authorize later actions but do not supply a transaction to simulate.
      */
     boolean confirmSignData(String origin, String address);
+
+    /** Pass exact payload to implementations that bind consent to data-signing discovery. */
+    default boolean confirmSignData(String origin, String address, String payload) {
+        return confirmSignData(origin, address);
+    }
 }

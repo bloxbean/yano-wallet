@@ -50,7 +50,86 @@ class QuickAdaTxServiceTest {
                 .anySatisfy(output -> assertThat(output.getAddress()).isEqualTo(senderAddress));
     }
 
+    @Test
+    void spendsInternalUtxoOfNonzeroAccountWithTheCorrectWitness() throws Exception {
+        Wallet sender = Wallet.createFromMnemonic(Networks.mainnet(), MNEMONIC, 2);
+        var internal = com.bloxbean.cardano.yano.wallet.core.wallet.WalletAddresses.account(sender, 1, 7);
+        String receiver = Wallet.create(Networks.mainnet()).getBaseAddressString(0);
+        QuickAdaTxDraft draft = new QuickAdaTxService().buildSignedDraft(sender,
+                singleUtxoSupplier(internal.baseAddress()), this::protocolParams,
+                new NoopTransactionProcessor(), receiver, BigInteger.valueOf(1_000_000));
+        Transaction tx = Transaction.deserialize(HexUtil.decodeHexString(draft.cborHex()));
+        assertThat(tx.getBody().getInputs()).hasSize(1);
+        assertThat(tx.getBody().getInputs().getFirst().getTransactionId())
+                .isEqualTo("7e1eecf7439fb5119a6762985a61c9fb3ca8158d9fc38361f0c4746430d5e0c7");
+        assertThat(tx.getWitnessSet().getVkeyWitnesses()).hasSize(1);
+        assertThat(tx.getWitnessSet().getVkeyWitnesses().getFirst().getVkey())
+                .containsExactly(internal.publicKeyBytes());
+        var witness = tx.getWitnessSet().getVkeyWitnesses().getFirst();
+        assertThat(com.bloxbean.cardano.client.crypto.config.CryptoConfiguration.INSTANCE.getSigningProvider()
+                .verify(witness.getSignature(), HexUtil.decodeHexString(draft.txHash()), witness.getVkey())).isTrue();
+        assertThat(tx.getBody().getOutputs()).anySatisfy(output ->
+                assertThat(output.getAddress()).isEqualTo(sender.getBaseAddressString(0)));
+    }
+
+    @Test
+    void signsBothRolesWhenInputsShareTheSameDerivationIndex() throws Exception {
+        Wallet sender = Wallet.createFromMnemonic(Networks.mainnet(), MNEMONIC, 1);
+        var external = sender.getAccountAtIndex(7);
+        var internal = com.bloxbean.cardano.yano.wallet.core.wallet.WalletAddresses.account(sender, 1, 7);
+        Set<String> funded = Set.of(external.baseAddress(), internal.baseAddress());
+        UtxoSupplier supplier = new UtxoSupplier() {
+            @Override
+            public List<Utxo> getPage(String address, Integer count, Integer page, OrderEnum order) {
+                if (page != 0 || !funded.contains(address)) return List.of();
+                return List.of(Utxo.builder().address(address)
+                        .txHash((address.equals(external.baseAddress()) ? "1" : "2").repeat(64))
+                        .outputIndex(0).amount(List.of(Amount.lovelace(BigInteger.valueOf(5_000_000))))
+                        .build());
+            }
+
+            @Override
+            public Optional<Utxo> getTxOutput(String hash, int index) { return Optional.empty(); }
+
+            @Override
+            public boolean isUsedAddress(Address address) { return funded.contains(address.toBech32()); }
+        };
+        QuickAdaTxDraft draft = new QuickAdaTxService().buildSignedDraft(sender, supplier,
+                this::protocolParams, new NoopTransactionProcessor(),
+                Wallet.create(Networks.mainnet()).getBaseAddressString(0), BigInteger.valueOf(7_000_000));
+        Transaction tx = Transaction.deserialize(HexUtil.decodeHexString(draft.cborHex()));
+        assertThat(tx.getBody().getInputs()).hasSize(2);
+        assertThat(tx.getBody().getFee()).isGreaterThanOrEqualTo(
+                BigInteger.valueOf(155381L + 44L * HexUtil.decodeHexString(draft.cborHex()).length));
+        assertThat(tx.getWitnessSet().getVkeyWitnesses())
+                .extracting(w -> HexUtil.encodeHexString(w.getVkey()))
+                .containsExactlyInAnyOrder(HexUtil.encodeHexString(external.publicKeyBytes()),
+                        HexUtil.encodeHexString(internal.publicKeyBytes()));
+        for (var witness : tx.getWitnessSet().getVkeyWitnesses()) {
+            assertThat(com.bloxbean.cardano.client.crypto.config.CryptoConfiguration.INSTANCE.getSigningProvider()
+                    .verify(witness.getSignature(), HexUtil.decodeHexString(draft.txHash()), witness.getVkey())).isTrue();
+        }
+    }
+
+    @Test
+    void canDraftPaymentFromKnownChangeFundsWithoutHistory() throws Exception {
+        Wallet sender = Wallet.createFromMnemonic(Networks.mainnet(), MNEMONIC);
+        var internal = com.bloxbean.cardano.yano.wallet.core.wallet.WalletAddresses.account(sender, 1, 24);
+        var draft = new QuickAdaTxService().buildSignedDraft(sender,
+                singleUtxoSupplier(internal.baseAddress(), true), this::protocolParams,
+                new NoopTransactionProcessor(), Wallet.create(Networks.mainnet()).getBaseAddressString(0),
+                BigInteger.valueOf(1_000_000));
+        var tx = Transaction.deserialize(HexUtil.decodeHexString(draft.cborHex()));
+        assertThat(tx.getWitnessSet().getVkeyWitnesses()).hasSize(1);
+        assertThat(tx.getWitnessSet().getVkeyWitnesses().getFirst().getVkey())
+                .containsExactly(internal.publicKeyBytes());
+    }
+
     private UtxoSupplier singleUtxoSupplier(String address) {
+        return singleUtxoSupplier(address, false);
+    }
+
+    private UtxoSupplier singleUtxoSupplier(String address, boolean historyUnsupported) {
         return new UtxoSupplier() {
             @Override
             public List<Utxo> getPage(String queryAddress, Integer nrOfItems, Integer page, OrderEnum order) {
@@ -72,6 +151,8 @@ class QuickAdaTxServiceTest {
 
             @Override
             public boolean isUsedAddress(Address candidate) {
+                if (historyUnsupported) throw new com.bloxbean.cardano.yano.wallet.core.service.HistoryPort
+                        .HistoryNotSupportedException("No history endpoint");
                 return address.equals(candidate.toBech32());
             }
         };

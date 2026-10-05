@@ -57,6 +57,17 @@ public final class FxCip30Prompt implements Cip30Prompt {
     }
 
     @Override
+    public boolean confirmSignData(String origin, String address, String signerDescription, String payload) {
+        return ask(dialog -> {
+            dialog.title("Approve data signature");
+            dialog.body(origin + "\n\n" + signerDescription + "\n\nAddress: " + address
+                    + "\n\nPayload (hex): " + payload
+                    + "\n\nThis signature may authorize account creation, spending or other actions in the requesting app. Verify that app's request before signing.");
+            dialog.okLabel("Sign with this key");
+        });
+    }
+
+    @Override
     public boolean confirmSignData(String origin, String address) {
         return ask(dialog -> {
             dialog.title("Approve signature");
@@ -72,6 +83,29 @@ public final class FxCip30Prompt implements Cip30Prompt {
             dialog.title("Approve transaction");
             dialog.body(origin + " asks you to sign a transaction.");
             dialog.okLabel("Approve");
+            dialog.effect(effect);
+        });
+    }
+
+    @Override
+    public boolean confirmExtendedSignerSearch(String origin, String signerDescription) {
+        return ask(dialog -> {
+            dialog.title("Search more signing addresses?");
+            dialog.body(origin + "\n\n" + signerDescription
+                    + "\n\nSearch receive and change indexes 30–49 in this account?"
+                    + " This only searches keys; it does not sign. Reject keeps the initial search results.");
+            dialog.okLabel("Search up to 50 addresses per chain");
+        });
+    }
+
+    @Override
+    public boolean confirmSign(String origin, TxEffectView effect, String signerDescription) {
+        return ask(dialog -> {
+            dialog.title("Approve transaction");
+            dialog.body(origin + " asks you to sign a transaction.\n\n" + signerDescription
+                    + "\n\nAll listed keys sign the same transaction body."
+                    + " Unmatched hashes are not signed by this wallet.");
+            dialog.okLabel("Approve listed signatures");
             dialog.effect(effect);
         });
     }

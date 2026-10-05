@@ -2,6 +2,7 @@ package com.bloxbean.cardano.yano.wallet.core.service;
 
 import java.math.BigInteger;
 import java.util.List;
+import java.util.Optional;
 
 /**
  * Transaction/reward history served by the node's ADR-033 M2 endpoints.
@@ -22,7 +23,36 @@ public interface HistoryPort {
 
     List<RewardView> rewards(String stakeAddress, int page, int count);
 
+    /**
+     * How far a scan running right now has walked the chain, or empty when none
+     * is. A first scan from origin walks the whole chain before it can answer,
+     * which is long enough that a screen showing nothing reads as a failure —
+     * this is what lets the UI say what is happening instead.
+     *
+     * <p>Read from whatever thread asks, including while the scan itself holds
+     * the backend executor.
+     */
+    default Optional<ScanProgress> scanProgress() {
+        return Optional.empty();
+    }
+
     record TxRef(String txHash, long blockHeight, long blockTime, long slot) {
+    }
+
+    /**
+     * Absolute chain heights: {@code fromBlock} is the cursor the scan resumed
+     * from (-1 for origin) and {@code tipBlock} the point the node reported it
+     * had indexed through when the scan started.
+     */
+    record ScanProgress(long fromBlock, long currentBlock, long tipBlock) {
+        /** Share of the interval walked, 0..1. A scan with nothing to walk is done. */
+        public double fraction() {
+            long span = tipBlock - fromBlock;
+            if (span <= 0) {
+                return 1.0;
+            }
+            return Math.clamp((double) (currentBlock - fromBlock) / span, 0.0, 1.0);
+        }
     }
 
     record RewardView(int epoch, BigInteger amount, String poolId, String type) {

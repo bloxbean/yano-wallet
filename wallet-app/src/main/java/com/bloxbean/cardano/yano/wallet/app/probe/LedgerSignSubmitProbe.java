@@ -59,7 +59,7 @@ public final class LedgerSignSubmitProbe {
         System.out.println("Account address: " + address);
 
         // Pick an ADA-only UTXO at the account's receive-0 address.
-        Utxo utxo = backend.utxoSupplier().getAll(address).stream()
+        Utxo utxo = backend.selectionUtxoSupplier().getAll(address).stream()
                 .filter(u -> u.getAmount().size() == 1 && "lovelace".equals(u.getAmount().get(0).getUnit()))
                 .findFirst()
                 .orElse(null);

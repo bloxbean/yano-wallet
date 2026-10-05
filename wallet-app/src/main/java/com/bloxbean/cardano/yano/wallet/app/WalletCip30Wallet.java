@@ -10,6 +10,7 @@ import com.bloxbean.cardano.client.util.HexUtil;
 import com.bloxbean.cardano.yano.wallet.connector.Cip30Exception;
 import com.bloxbean.cardano.yano.wallet.connector.Cip30Wallet;
 import com.bloxbean.cardano.yano.wallet.core.service.WalletService;
+import com.bloxbean.cardano.yano.wallet.core.tx.DappSignerSearch;
 import com.bloxbean.cardano.yano.wallet.core.wallet.StoredWallet;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -22,6 +23,13 @@ import java.util.List;
 import java.util.Locale;
 import java.util.Map;
 import java.util.function.Supplier;
+import java.util.concurrent.ArrayBlockingQueue;
+import java.util.concurrent.Future;
+import java.util.concurrent.ExecutionException;
+import java.util.concurrent.TimeoutException;
+import java.util.concurrent.RejectedExecutionException;
+import java.util.concurrent.ThreadPoolExecutor;
+import java.util.concurrent.TimeUnit;
 
 /**
  * The {@link Cip30Wallet} SPI backed by the unlocked session + node backend
@@ -59,6 +67,49 @@ final class WalletCip30Wallet implements Cip30Wallet {
     private final WalletBackendManager backendManager;
     private final Supplier<WalletService.Session> session;
     private final HardwareDappSigner hardwareDappSigner = new HardwareDappSigner();
+    // Dispatcher review and signing run on the same worker. A ticket is consumed once;
+    // account/network changes while the user approves must never select different keys.
+    private final ThreadLocal<SigningReview> approved = new ThreadLocal<>();
+    private static final ThreadPoolExecutor SIGNER_SEARCH = new ThreadPoolExecutor(
+            2, 2, 0, TimeUnit.SECONDS, new ArrayBlockingQueue<>(2), runnable -> {
+                Thread thread = new Thread(runnable, "yano-signer-search");
+                thread.setDaemon(true);
+                return thread;
+            });
+
+    record SigningReview(WalletService.Session session, WalletBackendManager.ActiveConnection connection,
+                         String txHex, boolean partial, DappSignerSearch.Plan plan) {}
+
+    SigningReview reviewSigning(String txHex, boolean partial, int limit) {
+        approved.remove();
+        var current = requireSession();
+        var conn = connection();
+        if (current.profile().isHardware()) return new SigningReview(current, conn, txHex, partial, null);
+        Future<DappSignerSearch.Plan> task;
+        try { task = SIGNER_SEARCH.submit(() -> current.reviewDappTx(txHex, limit)); }
+        catch (RejectedExecutionException e) {
+            throw Cip30Exception.refused("Signer search is busy. Retry after the pending requests finish.");
+        }
+        try {
+            return new SigningReview(current, conn, txHex, partial, task.get(10, TimeUnit.SECONDS));
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
+            throw Cip30Exception.refused("Signer search interrupted; no transaction was signed.");
+        } catch (TimeoutException e) {
+            throw Cip30Exception.refused("Signer search timed out; check the node and retry. No transaction was signed.");
+        } catch (ExecutionException e) {
+            throw Cip30Exception.refused("Signer search failed: " + e.getCause().getMessage());
+        } finally {
+            task.cancel(true);
+        }
+    }
+
+    void approveSigning(SigningReview review) {
+        if (session.get() != review.session() || connection() != review.connection())
+            throw Cip30Exception.refused("Account or network changed during review. Review the request again.");
+        approved.set(review);
+    }
+
     /**
      * Transaction hashes this wallet submitted, newest last — the evidence that a
      * missing input is one we are about to create rather than one that never
@@ -115,7 +166,12 @@ final class WalletCip30Wallet implements Cip30Wallet {
     @Override
     public String signTx(String txHex, boolean partialSign) {
         try {
-            StoredWallet profile = profile();
+            SigningReview review = approved.get();
+            approved.remove();
+            if (review == null || !txHex.equals(review.txHex()) || partialSign != review.partial()
+                    || session.get() != review.session() || connection() != review.connection())
+                throw Cip30Exception.refused("No matching approval for this account, network and transaction.");
+            StoredWallet profile = review.session().profile();
             log.info("CIP-30 signTx: {} bytes, partialSign={}, tx {}",
                     txHex.length() / 2, partialSign, txHashOrUnknown(txHex));
             if (profile.isHardware()) {
@@ -125,7 +181,7 @@ final class WalletCip30Wallet implements Cip30Wallet {
                 return hardwareDappSigner.signTx(conn.backend(), conn.network(), profile,
                         txHex, partialSign);
             }
-            String witnessSet = requireSession().signDappTx(txHex, partialSign);
+            String witnessSet = review.session().signDappTx(txHex, partialSign, review.plan());
             log.info("CIP-30 signTx: returning {} bytes of witnesses for tx {}",
                     witnessSet.length() / 2, txHashOrUnknown(txHex));
             return witnessSet;
@@ -148,17 +204,42 @@ final class WalletCip30Wallet implements Cip30Wallet {
         }
     }
 
+    private final ThreadLocal<DataReview> approvedData = new ThreadLocal<>();
+    record DataReview(WalletService.Session session, WalletBackendManager.ActiveConnection connection,
+                      DappSignerSearch.DataPlan plan) {}
+
+    DataReview reviewData(String address, String payload, int limit) {
+        approvedData.remove();
+        if (address == null || address.length() > 114 || payload == null || payload.length() > 131072)
+            throw Cip30Exception.refused("Data signing request exceeds its size limit.");
+        var current = requireSession(); var conn = connection();
+        Future<DappSignerSearch.DataPlan> task;
+        try { task = SIGNER_SEARCH.submit(() -> current.reviewDappData(HexUtil.decodeHexString(address), HexUtil.decodeHexString(payload), limit)); }
+        catch (RejectedExecutionException e) { throw Cip30Exception.refused("Signer search is busy. Retry later."); }
+        try { return new DataReview(current, conn, task.get(10, TimeUnit.SECONDS)); }
+        catch (InterruptedException e) { Thread.currentThread().interrupt(); throw Cip30Exception.refused("Signer search interrupted."); }
+        catch (TimeoutException e) { throw Cip30Exception.refused("Signer search timed out. No data was signed."); }
+        catch (ExecutionException e) { throw Cip30Exception.refused("Signer search failed: " + e.getCause().getMessage()); }
+        finally { task.cancel(true); }
+    }
+
+    void approveData(DataReview review) {
+        if (session.get() != review.session() || connection() != review.connection())
+            throw Cip30Exception.refused("Account or network changed during review. Retry the request.");
+        approvedData.set(review);
+    }
+
     @Override
     public DataSignature signData(String signerAddress, String payloadHex) {
         try {
-            var sig = requireSession().signDappData(
-                    HexUtil.decodeHexString(signerAddress), HexUtil.decodeHexString(payloadHex));
+            var review = approvedData.get(); approvedData.remove();
+            if (review == null || session.get() != review.session() || connection() != review.connection()
+                    || !review.plan().address().equalsIgnoreCase(signerAddress) || !review.plan().payload().equalsIgnoreCase(payloadHex))
+                throw Cip30Exception.refused("No matching approval for this account, network, address and payload.");
+            var sig = review.session().signDappData(HexUtil.decodeHexString(signerAddress), HexUtil.decodeHexString(payloadHex), review.plan());
             return new DataSignature(sig.signature(), sig.key());
-        } catch (Cip30Exception e) {
-            throw e;
-        } catch (RuntimeException e) {
-            throw Cip30Exception.internal(e.getMessage());
-        }
+        } catch (Cip30Exception e) { throw e; }
+        catch (RuntimeException e) { throw Cip30Exception.internal(e.getMessage()); }
     }
 
     private WalletService.Session requireSession() {

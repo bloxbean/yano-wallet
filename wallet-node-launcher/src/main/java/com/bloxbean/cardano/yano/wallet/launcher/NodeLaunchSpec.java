@@ -28,6 +28,16 @@ public record NodeLaunchSpec(
     public static final int DEFAULT_HTTP_PORT = 8090;
     public static final int DEFAULT_N2N_PORT = 13400;
 
+    /**
+     * Sizing the user can change by hand in {@code node.properties} beside
+     * {@code node.log}; see {@link NodeOptions}. Read once per spec so a running
+     * node keeps the values it started with, and an edit takes effect on the
+     * next start rather than halfway through a sync.
+     */
+    private NodeOptions options() {
+        return NodeOptions.load(chainstateDir.getParent());
+    }
+
     public NodeLaunchSpec {
         Objects.requireNonNull(network, "network is required");
         Objects.requireNonNull(nodeJar, "nodeJar is required");
@@ -52,14 +62,33 @@ public record NodeLaunchSpec(
     }
 
     /**
-     * Quarkus profiles for the managed node: the network profile plus the
-     * {@code wallet} profile so the wallet APIs (address/tx/reward history,
-     * address-tx index) are enabled. The devnet profile already turns these on,
-     * but preprod/mainnet/preview do not — without the wallet profile a managed
-     * real-network node would serve balances but no history/rewards. Later
-     * profiles win on conflict, so {@code wallet} is listed last.
+     * Quarkus profiles for the managed node: the network profile, then
+     * {@code medium}, then {@code wallet}.
+     *
+     * <p>{@code wallet} enables what this wallet reads — the scan index,
+     * address-first-seen and the UTxO state. The devnet profile turns those on
+     * by itself, but preprod/mainnet/preview do not, so without it a managed
+     * real-network node serves balances and no history.
+     *
+     * <p>The sizing profile — {@code medium} unless {@code node.properties} says
+     * otherwise — sizes the node for the desktop it is sharing: RocksDB caches,
+     * open files and the decoded-block queue budget. Note it carries no heap of
+     * its own; {@code yano.sh} pairs each profile with an {@code -Xmx} and this
+     * launcher spawns the node directly, so {@link #maxHeap()} supplies it.
+     *
+     * <p>Later profiles win on conflict, so {@code wallet} stays last: its
+     * switches must not be overridden by a sizing profile, whoever chose it.
      */
     public String quarkusProfile() {
-        return network.id() + ",wallet";
+        return network.id() + "," + options().sizingProfile() + ",wallet";
+    }
+
+    /**
+     * The {@code -Xmx} to launch with. Accepted by both the jar and the native
+     * binary — a native image reads {@code -Xmx}, {@code -Xms} and {@code -Xss}
+     * at runtime, which is how {@code yano.sh} sizes it too.
+     */
+    public String maxHeap() {
+        return options().maxHeap();
     }
 }

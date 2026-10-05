@@ -340,6 +340,27 @@ public final class ManagedNode implements AutoCloseable {
     }
 
     private Process spawn() throws IOException {
+        List<String> command = buildCommand();
+        Files.createDirectories(spec.logFile().toAbsolutePath().getParent());
+        // Put the settings where the user already looks when a node misbehaves:
+        // the folder holding node.log. Entirely commented out, so it documents
+        // the defaults without changing them.
+        NodeOptions.writeTemplateIfMissing(spec.chainstateDir().toAbsolutePath().getParent());
+        ProcessBuilder builder = new ProcessBuilder(command)
+                .directory(spec.workingDir().toFile())
+                .redirectErrorStream(true)
+                .redirectOutput(spec.logFile().toFile());
+        log.info("Starting managed node: {} (workingDir={}, http={}, chainstate={}, maxHeap={})",
+                spec.nodeJar().getFileName(), spec.workingDir(), spec.httpPort(), spec.chainstateDir(),
+                spec.maxHeap());
+        return builder.start();
+    }
+
+    /**
+     * The exact command line, split out so the ordering rules below can be
+     * tested without starting a node.
+     */
+    List<String> buildCommand() {
         List<String> command = new ArrayList<>();
         // System-property overrides (Quarkus/MicroProfile config beats application.yml):
         // custom REST + N2N ports and an isolated chainstate keep the managed
@@ -349,6 +370,10 @@ public final class ManagedNode implements AutoCloseable {
         // binary too.
         if (spec.nativeBinary()) {
             command.add(spec.nodeJar().toString());
+            // A native image accepts -Xmx at runtime, and yano.sh sizes the binary
+            // exactly this way. Without it the node's heap is unbounded relative
+            // to the sizing profile we select for its caches.
+            command.add("-Xmx" + spec.maxHeap());
             addSysProp(command, "quarkus.profile", spec.quarkusProfile());
             addSysProp(command, "quarkus.http.port", String.valueOf(spec.httpPort()));
             addSysProp(command, "yano.server.port", String.valueOf(spec.n2nPort()));
@@ -356,6 +381,10 @@ public final class ManagedNode implements AutoCloseable {
             addUpstreamRelays(command);
         } else {
             command.add(spec.javaExecutable());
+            // Like the -D flags, this MUST precede -jar: after it, the JVM reads
+            // it as a program argument and silently ignores it. The JVM reads no
+            // JAVA_OPTS of its own, so this is the only channel.
+            command.add("-Xmx" + spec.maxHeap());
             addSysProp(command, "quarkus.profile", spec.quarkusProfile());
             addSysProp(command, "quarkus.http.port", String.valueOf(spec.httpPort()));
             addSysProp(command, "yano.server.port", String.valueOf(spec.n2nPort()));
@@ -364,15 +393,7 @@ public final class ManagedNode implements AutoCloseable {
             command.add("-jar");
             command.add(spec.nodeJar().toString());
         }
-
-        Files.createDirectories(spec.logFile().toAbsolutePath().getParent());
-        ProcessBuilder builder = new ProcessBuilder(command)
-                .directory(spec.workingDir().toFile())
-                .redirectErrorStream(true)
-                .redirectOutput(spec.logFile().toFile());
-        log.info("Starting managed node: {} (workingDir={}, http={}, chainstate={})",
-                spec.nodeJar().getFileName(), spec.workingDir(), spec.httpPort(), spec.chainstateDir());
-        return builder.start();
+        return command;
     }
 
     /**

@@ -28,6 +28,12 @@ public final class ApprovalOverlay {
      */
     public static void show(StackPane overlay, WalletUiController controller,
                             WalletUiController.DraftView draft, Runnable onSubmitted) {
+        show(overlay, controller, draft, onSubmitted, null);
+    }
+
+    /** onRebuild builds a new draft and opens a new review, without submitting it. */
+    public static void show(StackPane overlay, WalletUiController controller,
+                            WalletUiController.DraftView draft, Runnable onSubmitted, Runnable onRebuild) {
         StackPane scrim = new StackPane();
         scrim.getStyleClass().add("modal-scrim");
         scrim.setOnMouseClicked(javafx.event.Event::consume); // swallow background clicks
@@ -65,9 +71,14 @@ public final class ApprovalOverlay {
         in.setToValue(1);
         in.play();
 
+        boolean[] needsRebuild = {false};
         Ui.onFx(controller.simulateDraft(draft.draftId()),
-                effect -> describeVerification(verification, effect),
-                error -> verification.setText("This transaction could not be checked against your node."));
+                effect -> {
+                    if (!needsRebuild[0]) describeVerification(verification, effect);
+                },
+                error -> {
+                    if (!needsRebuild[0]) verification.setText("This transaction could not be checked against your node.");
+                });
 
         Runnable close = () -> overlay.getChildren().remove(scrim);
         cancel.setOnAction(e -> close.run());
@@ -81,6 +92,18 @@ public final class ApprovalOverlay {
                     onSubmitted.run();
                 }
             }, error -> {
+                if (error instanceof WalletUiController.DraftNeedsRebuildException) {
+                    needsRebuild[0] = true;
+                    verification.setText(error.getMessage());
+                    cancel.setDisable(false);
+                    confirm.setText(onRebuild == null ? "Close and review again" : "Rebuild & review");
+                    confirm.setDisable(false);
+                    confirm.setOnAction(rebuild -> {
+                        close.run();
+                        if (onRebuild != null) onRebuild.run();
+                    });
+                    return;
+                }
                 confirm.setDisable(false);
                 cancel.setDisable(false);
                 Ui.toast(overlay, "Submit failed: " + error.getMessage(), true);

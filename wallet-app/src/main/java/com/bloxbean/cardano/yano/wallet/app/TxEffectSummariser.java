@@ -7,6 +7,7 @@ import com.bloxbean.cardano.yano.wallet.core.simulate.TxFacts;
 import com.bloxbean.cardano.yano.wallet.core.simulate.WalletContext;
 import com.bloxbean.cardano.yano.wallet.core.simulate.WalletOwnership;
 import com.bloxbean.cardano.yano.wallet.core.wallet.StoredWallet;
+import com.bloxbean.cardano.yano.wallet.core.wallet.WalletBalance;
 import com.bloxbean.cardano.yano.wallet.ui.contract.TxEffectView;
 
 import java.math.BigInteger;
@@ -73,11 +74,15 @@ final class TxEffectSummariser {
             if (connection == null) {
                 return degraded(txHex, "The wallet is not connected to a node, so this transaction was not checked.");
             }
-            WalletOwnership ownership = ownership();
             TxEffectEngine engine = new TxEffectEngine(connection.backend().ports(), resolvers);
-            // Gathered on the supervisor thread, inside the deadline: a slow node
-            // must cost a couple of risk signals, never the whole prompt.
-            analysis = supervisor.submit(() -> engine.analyse(txHex, ownership, context(connection)));
+            // Discovery is inside the deadline too. If ownership cannot be established,
+            // report an unchecked transaction rather than a misleading value diff.
+            analysis = supervisor.submit(() -> {
+                WalletService.Session current = session.get();
+                WalletBalance balance = current == null ? null : current.balance();
+                return engine.analyse(txHex, ownership(current == null ? null : current.profile(), balance),
+                        context(connection, balance));
+            });
         } catch (RuntimeException e) {
             return degraded(txHex, "This transaction could not be checked: " + e.getMessage());
         }
@@ -97,51 +102,42 @@ final class TxEffectSummariser {
     }
 
     /**
-     * Balance and chain tip for the signals that need them (SIM-M3). Best-effort
-     * by design: {@link WalletContext#unknown()} suppresses those two signals
-     * rather than guessing, and a node hiccup here must not cost the user the
-     * value diff they actually came for.
+     * Reuse the discovery balance for risk signals. Chain-tip lookup is best effort;
+     * a tip lookup failure suppresses expiry signals without changing ownership.
      */
-    private WalletContext context(WalletBackendManager.ActiveConnection connection) {
-        WalletService.Session current = session.get();
-        BigInteger balance = null;
+    private WalletContext context(WalletBackendManager.ActiveConnection connection, WalletBalance balance) {
         long slot = 0L;
-        try {
-            if (current != null) {
-                balance = current.balance().lovelace();
-            }
-        } catch (RuntimeException e) {
-            balance = null;
-        }
         try {
             slot = connection.service().nodeStatus().slot();
         } catch (RuntimeException e) {
             slot = 0L;
         }
-        return new WalletContext(balance, slot);
+        return new WalletContext(balance == null ? null : balance.lovelace(), slot);
     }
 
     /**
      * The addresses whose funds count as ours.
      *
-     * <p>One base address plus one stake address, because that is exactly what
-     * this wallet's signer can authorise: {@code DappSigner} signs with the
-     * account's single payment key, and its stake key for certificates and
-     * withdrawals. {@link WalletOwnership} requires the set to cover everything
-     * the signer can sign — so whenever the signer gains reach (more derived
-     * receive addresses, multiple accounts per ADR-037), this method must grow
-     * with it, or inputs at the new credentials would be quietly treated as
-     * somebody else's and shrink the reported loss.
+     * <p>Include discovered receive and change credentials as well as the primary
+     * address. Software payments can spend any of these. Discovery runs inside
+     * the analysis deadline and must succeed; otherwise the whole summary is
+     * degraded rather than misclassifying wallet inputs as somebody else's.
      */
-    private WalletOwnership ownership() {
-        WalletService.Session current = session.get();
-        if (current == null) {
+    static WalletOwnership ownership(StoredWallet profile, WalletBalance balance) {
+        if (balance != null && !balance.complete()) {
+            throw new IllegalStateException("Wallet address discovery is incomplete");
+        }
+        if (profile == null) {
             return WalletOwnership.ofAddresses(List.of());
         }
-        StoredWallet profile = current.profile();
         List<String> addresses = new ArrayList<>();
         if (profile.baseAddress() != null) {
             addresses.add(profile.baseAddress());
+        }
+        if (balance != null) {
+            balance.utxos().stream()
+                    .map(com.bloxbean.cardano.yano.wallet.core.wallet.WalletUtxoView::address)
+                    .forEach(addresses::add);
         }
         List<String> rewardAddresses = new ArrayList<>();
         if (profile.stakeAddress() != null) {

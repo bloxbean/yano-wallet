@@ -263,7 +263,8 @@ public class FileStoredWalletRepository implements StoredWalletRepository {
     /** An account is in use if any address within its gap window has history. */
     private static boolean hasHistory(Wallet wallet, Predicate<String> addressUsed, int gapLimit) {
         for (int addressIndex = 0; addressIndex < gapLimit; addressIndex++) {
-            if (addressUsed.test(wallet.getBaseAddressString(addressIndex))) {
+            if (addressUsed.test(WalletAddresses.baseAddress(wallet, 0, addressIndex).toBech32())
+                    || addressUsed.test(WalletAddresses.baseAddress(wallet, 1, addressIndex).toBech32())) {
                 return true;
             }
         }

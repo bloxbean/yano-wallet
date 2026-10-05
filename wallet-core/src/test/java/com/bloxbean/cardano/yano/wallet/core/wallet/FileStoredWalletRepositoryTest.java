@@ -167,6 +167,19 @@ class FileStoredWalletRepositoryTest {
     }
 
     @Test
+    void discoversAccountWithOnlyInternalAddressHistory() {
+        FileStoredWalletRepository repository = repository(WalletNetwork.PREPROD);
+        StoredWallet account0 = repository.importMnemonic("Wallet", MNEMONIC, "passphrase".toCharArray());
+        var wallet = com.bloxbean.cardano.hdwallet.Wallet.createFromMnemonic(
+                WalletNetwork.PREPROD.toCclNetwork(), MNEMONIC, 1);
+        String internal = WalletAddresses.baseAddress(wallet, 1, 3).toBech32();
+        var found = repository.discoverAccounts(account0.seedId(), "passphrase".toCharArray(),
+                internal::equals, 4, 5);
+        assertThat(found).extracting(StoredWalletRepository.DiscoveredAccount::accountIndex)
+                .containsExactly(1);
+    }
+
+    @Test
     void discoveryFindsNothingForAnUnusedSeedAndRejectsWrongPassphrase() {
         FileStoredWalletRepository repository = repository(WalletNetwork.PREPROD);
         StoredWallet account0 = repository.importMnemonic("Wallet", MNEMONIC, "right".toCharArray());

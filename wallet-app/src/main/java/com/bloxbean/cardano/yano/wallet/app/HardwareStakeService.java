@@ -370,7 +370,7 @@ final class HardwareStakeService {
     }
 
     private static Selection selectUtxos(YanoNodeBackend backend, String address, BigInteger required) {
-        List<Utxo> available = backend.utxoSupplier().getAll(address).stream()
+        List<Utxo> available = backend.selectionUtxoSupplier().getAll(address).stream()
                 .filter(u -> u.getAmount().size() == 1 && "lovelace".equals(u.getAmount().get(0).getUnit()))
                 .sorted(Comparator.comparing((Utxo u) -> u.getAmount().get(0).getQuantity()).reversed())
                 .toList();

@@ -181,10 +181,23 @@ Verification-only flags (used by the screenshot/e2e harness):
   all go through it, so behavior can't drift.
 - **Managed node = child process** (not in-process): crash isolation and the
   node stays a native-imageable binary. Overrides via `-D` sysprops that MUST
-  precede `-jar`: `quarkus.profile=<network>,wallet`, `quarkus.http.port`,
-  `yano.server.port`, `yano.storage.path`. The `,wallet` profile is required so
-  real networks enable the wallet APIs (address/tx/reward history) — only
-  `%devnet` turns them on by itself.
+  precede `-jar`: `-Xmx`, then `quarkus.profile=<network>,<sizing>,wallet`,
+  `quarkus.http.port`, `yano.server.port`, `yano.storage.path`. The `,wallet`
+  profile is required so real networks enable the wallet APIs (scan index,
+  address-first-seen, UTxO state) — only `%devnet` turns them on by itself — and
+  it stays last because a later profile wins. The sizing profile (`medium` by
+  default) sets RocksDB caches and the decoded-block queue for a 4 GiB+ desktop.
+  It carries no heap of its own: `yano.sh` pairs each profile with an `-Xmx` and
+  we do not go through `yano.sh`, so the launcher passes `-Xmx` itself. The JVM
+  reads no `JAVA_OPTS`, and a `-Xmx` after `-jar` is a program argument the JVM
+  ignores — hence the ordering, pinned by `NodeLaunchCommandTest`.
+- **Managed node sizing is user-editable**: `~/.yano-wallet/<network>/node/node.properties`
+  (beside `node.log`), written as a commented template on first managed start.
+  `sizingProfile=xsmall|small|medium|large` picks the profile and its heap
+  (384m/384m/1536m/2g, mirroring `yano.sh:355-373`); `maxHeap=` overrides just
+  the heap. Bad values are logged and ignored rather than failing the start, and
+  edits apply on the next node start. `-Dyano.wallet.node.sizing-profile` and
+  `-Dyano.wallet.node.max-heap` on the *wallet* do the same for a dev run.
 - **Node not native for the UI.** Per ADR-033, the JavaFX UI ships via
   jlink/jpackage (Gluon's GraalVM is frozen below JDK 25); the node stays the
   GraalVM-native binary. Keep `wallet-app`/`wallet-ui` framework-light so a

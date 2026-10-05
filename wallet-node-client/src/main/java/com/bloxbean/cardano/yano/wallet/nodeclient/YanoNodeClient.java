@@ -1,6 +1,11 @@
 package com.bloxbean.cardano.yano.wallet.nodeclient;
 
+import com.bloxbean.cardano.client.address.Address;
+import com.bloxbean.cardano.client.api.common.OrderEnum;
+import com.bloxbean.cardano.client.api.model.Utxo;
+import com.bloxbean.cardano.client.api.model.Amount;
 import com.bloxbean.cardano.yano.wallet.core.config.WalletNetwork;
+import com.bloxbean.cardano.yano.wallet.core.service.HistoryPort.HistoryNotSupportedException;
 import com.bloxbean.cardano.yano.wallet.core.simulate.AssetQuantity;
 import com.bloxbean.cardano.yano.wallet.core.simulate.ResolvedOutput;
 import com.bloxbean.cardano.yano.wallet.core.simulate.ScriptEvaluation;
@@ -23,6 +28,9 @@ import java.util.List;
 import java.util.HexFormat;
 import java.util.Locale;
 import java.util.Objects;
+import java.util.Optional;
+import java.util.HashSet;
+import java.util.function.Consumer;
 
 /**
  * Thin client for Yano-specific (non-Blockfrost) endpoints of a local node:
@@ -71,9 +79,64 @@ public class YanoNodeClient {
         return baseUri.toString();
     }
 
+    void scanWallet(JsonNode request, Consumer<JsonNode> records) {
+        WalletScanTransport.scan(httpClient, objectMapper, baseUri.resolve("scan"), request, records);
+    }
+
     /** True when this backend is yaci-store rather than a Yano node (ADR-038). */
     public boolean isBlockfrostFlavor() {
         return blockfrostFlavor;
+    }
+
+    /** Selection only: never used by confirmed balances or history. */
+    List<Utxo> getSelectionUtxos(String address, boolean credential, int count, int page, OrderEnum order) {
+        if (blockfrostFlavor) throw new IllegalStateException("Yano backend required");
+        String path = credential
+                ? "credentials/" + HexFormat.of().formatHex(new Address(address).getPaymentCredentialHash().orElseThrow())
+                : "addresses/" + new Address(address).toBech32();
+        JsonNode rows = getJson(path + "/utxos?page=" + page + "&count=" + count
+                + "&order=" + order + "&include_mempool=true");
+        if (!rows.isArray()) throw new NodeClientException("Invalid selection UTxO response");
+        List<Utxo> result = new ArrayList<>();
+        for (JsonNode row : rows) result.add(selectionUtxo(row));
+        return result;
+    }
+
+    Optional<Utxo> getSelectionOutput(String hash, int index) {
+        if (blockfrostFlavor) throw new IllegalStateException("Yano backend required");
+        if (!isTxHash(hash) || index < 0) throw new IllegalArgumentException("Invalid output reference");
+        JsonNode row = getJsonOrNull("utxos/" + hash + "/" + index + "?include_mempool=true");
+        if (row == null) return Optional.empty();
+        Utxo output = selectionUtxo(row);
+        if (!hash.equals(output.getTxHash()) || index != output.getOutputIndex()) {
+            throw new NodeClientException("Selection output does not match requested reference");
+        }
+        return Optional.of(output);
+    }
+
+    private Utxo selectionUtxo(JsonNode row) {
+        if (!isTxHash(row.path("tx_hash").asText()) || !row.path("output_index").isIntegralNumber()
+                || !row.path("output_index").canConvertToInt() || row.path("output_index").asInt() < 0
+                || !row.path("address").isTextual() || row.path("address").asText().isBlank()
+                || !row.path("amount").isArray()) {
+            throw new NodeClientException("Invalid selection UTxO entry");
+        }
+        List<Amount> amounts = new ArrayList<>();
+        var units = new HashSet<String>();
+        for (JsonNode amount : row.path("amount")) {
+            String unit = amount.path("unit").asText();
+            String quantity = amount.path("quantity").asText();
+            if ((!"lovelace".equals(unit) && !unit.matches("[0-9a-f]{56}([0-9a-f]{2}){0,32}"))
+                    || !quantity.matches("[0-9]+") || !units.add(unit)) {
+                throw new NodeClientException("Invalid selection UTxO amount");
+            }
+            amounts.add(new Amount(unit, new BigInteger(quantity)));
+        }
+        if (!units.contains("lovelace")) throw new NodeClientException("Selection UTxO is missing lovelace");
+        return Utxo.builder().txHash(row.path("tx_hash").asText()).outputIndex(row.path("output_index").asInt())
+                .address(row.path("address").asText()).amount(amounts)
+                .dataHash(row.path("data_hash").asText(null)).inlineDatum(row.path("inline_datum").asText(null))
+                .referenceScriptHash(row.path("reference_script_hash").asText(null)).build();
     }
 
     public NodeStatus getStatus() {
@@ -335,6 +398,83 @@ public class YanoNodeClient {
         JsonNode root = getHistoryJson("addresses/" + address + "/transactions?page=" + page
                 + "&count=" + count + "&order=" + order);
         return root == null ? null : parseAddressTxs(root);
+    }
+
+    /** Distinguishes unused addresses, absent/disabled history, and failed history requests. */
+    public boolean isAddressUsed(String address) {
+        if (!blockfrostFlavor) {
+            Boolean used = addressFirstSeen(address);
+            if (used != null) return used;
+        }
+        String path = "addresses/" + address + "/transactions?page=1&count=1&order=asc";
+        RawResponse response = getRaw(path, requestTimeout);
+        // Blockfrost-compatible stores return 404 for a never-used address.
+        // Yano returns [] for that case; its 404 means the route is missing.
+        if (blockfrostFlavor && response.status() == 404) return false;
+        if (!blockfrostFlavor && response.status() == 404) {
+            throw new com.bloxbean.cardano.yano.wallet.core.service.HistoryPort.HistoryNotSupportedException(
+                    "Address history unavailable: this node does not serve the history endpoint (HTTP 404)");
+        }
+        if (!blockfrostFlavor && response.status() == 503) {
+            try {
+                JsonNode errorBody = objectMapper.readTree(response.body());
+                String error = errorBody == null ? "" : errorBody.path("error").asText("").toLowerCase(Locale.ROOT);
+                if (error.contains("address") && (error.contains("disabled") || error.contains("not selected"))) {
+                    throw new com.bloxbean.cardano.yano.wallet.core.service.HistoryPort.HistoryNotSupportedException(
+                            "Address history unavailable: the node's address history index is disabled");
+                }
+            } catch (IOException e) {
+                throw new NodeClientException("Unreadable address history error response", e);
+            }
+        }
+        if (response.status() != 200) {
+            throw new NodeClientException("Address history unavailable (HTTP " + response.status()
+                    + "). Enable address transaction history on the node and retry.");
+        }
+        try {
+            JsonNode root = objectMapper.readTree(response.body());
+            if (root == null || !root.isArray()) {
+                throw new NodeClientException("Invalid address history response: expected an array");
+            }
+            return !root.isEmpty();
+        } catch (IOException e) {
+            throw new NodeClientException("Unreadable address history response", e);
+        }
+    }
+
+    /** Null means an older node lacks the route; an incomplete index never means unused. */
+    private Boolean addressFirstSeen(String address) {
+        RawResponse response = getRaw("addresses/" + address + "/first-seen", requestTimeout);
+        if (response.status() == 404) return null;
+        if (response.status() == 503) {
+            throw new HistoryNotSupportedException("Address discovery index is disabled or incomplete; enable it before a fresh node sync");
+        }
+        if (response.status() != 200) throw new NodeClientException("First-seen lookup failed (HTTP " + response.status() + ")");
+        try {
+            JsonNode root = objectMapper.readTree(response.body());
+            JsonNode coverage = root.path("coverage");
+            if (!root.has("firstSeenSlot") || !coverage.path("enabled").asBoolean()
+                    || !coverage.path("completeFromOrigin").asBoolean()
+                    || coverage.hasNonNull("unavailableReason")
+                    || !coverage.path("indexedThrough").path("blockNumber").isIntegralNumber()
+                    || !root.path("liveTip").path("blockNumber").isIntegralNumber()) {
+                throw new NodeClientException("First-seen response does not establish complete coverage");
+            }
+            JsonNode first = root.get("firstSeenSlot");
+            if (first.isNull()) {
+                if (coverage.path("indexedThrough").path("blockNumber").longValue()
+                        < root.path("liveTip").path("blockNumber").longValue()) {
+                    throw new NodeClientException("First-seen index is catching up; retry address discovery");
+                }
+                return false;
+            }
+            if (!first.isIntegralNumber() || !first.canConvertToLong() || first.longValue() < 0) {
+                throw new NodeClientException("Invalid first-seen slot");
+            }
+            return true;
+        } catch (IOException failure) {
+            throw new NodeClientException("Unreadable first-seen response", failure);
+        }
     }
 
     /**

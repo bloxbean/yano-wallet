@@ -20,10 +20,26 @@ public interface Cip30Prompt {
      */
     boolean confirmSign(String origin, TxEffectView effect);
 
+    /** Show all selected derivation paths together with the transaction effect. */
+    default boolean confirmSign(String origin, TxEffectView effect, String signerDescription) {
+        // Older prompt implementations cannot display the required key review. Fail closed.
+        return false;
+    }
+
+    /** Explicitly extend this request from 30 to 50 indexes on each payment chain. */
+    default boolean confirmExtendedSignerSearch(String origin, String signerDescription) {
+        return false;
+    }
+
     /**
      * Ask the user to approve a CIP-8 data signature from {@code origin}. Data
      * signing moves no value and has no effect to simulate, so it deliberately
      * does not take a {@link TxEffectView} it could not fill.
      */
     boolean confirmSignData(String origin, String address);
+
+    /** Review the exact payload and resolved key path before COSE signing. */
+    default boolean confirmSignData(String origin, String address, String signerDescription, String payload) {
+        return false;
+    }
 }
