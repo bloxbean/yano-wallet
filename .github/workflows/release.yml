@@ -22,8 +22,11 @@ name: release
 # built by build.yml, which skips packaging entirely so it stays fast.
 #
 # jpackage cannot cross-compile, so one runner per OS. The JDK is an OpenJDK
-# build (Temurin, GPLv2+CE) — never Oracle JDK — so the bundled runtime is freely
-# redistributable. JavaFX + hardware-wallet natives ride the app's classpath, so
+# build (Amazon Corretto, GPLv2+CE) — never Oracle JDK — so the bundled runtime
+# is freely redistributable. Corretto rather than Temurin because the installers
+# SHIP this runtime: CVE-2026-114938 ("Java4Shell") is fixed in 25.0.5.1, which
+# Corretto publishes and Temurin did not yet when this was switched. A guard step
+# refuses to package on anything older (see below). JavaFX + hardware-wallet natives ride the app's classpath, so
 # each installer is OS/arch-specific. The portable zip is not — see above.
 
 on:
@@ -53,11 +56,41 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - name: Set up OpenJDK 25 (Temurin — GPLv2+CE, redistributable runtime)
+      - name: Set up OpenJDK 25 (Corretto — GPLv2+CE, redistributable runtime)
         uses: actions/setup-java@v4
         with:
-          distribution: 'temurin'
+          distribution: 'corretto'
           java-version: '25'
+
+      # The JDK set up above is the one jlinkRuntime copies into every installer,
+      # so it must not predate the CVE-2026-114938 ("Java4Shell") fix: an
+      # out-of-bounds write in HotSpot's AVX-512 VBMI Base64 intrinsic, reachable
+      # on x86-64 Ice Lake+/Zen 4+ CPUs. Fixed in 25.0.5.1. Checked here, not
+      # trusted to "latest", so a stale toolcache or a resolver change cannot ship
+      # a vulnerable runtime. Plain bash on purpose (macOS has bash 3.2 and no
+      # GNU sort -V).
+      - name: Assert patched JDK (>= 25.0.5.1, CVE-2026-114938)
+        shell: bash
+        run: |
+          set -euo pipefail
+          "$JAVA_HOME/bin/java" -version 2>&1
+          v=$("$JAVA_HOME/bin/java" -XshowSettings:properties -version 2>&1 \
+                | awk -F' = ' '/java.runtime.version/ {print $2}' | tr -d '\r ')
+          min=25.0.5.1
+          base=${v%%[+-]*}          # 25.0.5.1+2-LTS -> 25.0.5.1
+          IFS=. read -r -a have <<< "$base"
+          IFS=. read -r -a need <<< "$min"
+          ok=1
+          for i in 0 1 2 3; do
+            h=${have[$i]:-0}; n=${need[$i]:-0}
+            if (( 10#$h > 10#$n )); then break; fi
+            if (( 10#$h < 10#$n )); then ok=0; break; fi
+          done
+          if [ -z "$base" ] || [ "$ok" != 1 ]; then
+            echo "::error::JDK runtime '$v' is older than $min (CVE-2026-114938); refusing to bundle it."
+            exit 1
+          fi
+          echo "JDK runtime $v >= $min: OK"
 
       - name: Resolve version (tag > gradle.properties)
         id: ver
@@ -111,7 +144,7 @@ jobs:
         shell: bash
         run: ./gradlew fetchYanoNode --no-daemon
 
-      # jpackage jlinks the bundled JRE from this Temurin JDK.
+      # jpackage jlinks the bundled JRE from this Corretto JDK (checked above).
       - name: Build installer (${{ matrix.platform }})
         shell: bash
         run: ./gradlew :wallet-app:jpackageInstaller --no-daemon
