@@ -154,7 +154,8 @@ tasks.register('ledgerSignSubmitProbe', JavaExec) {
 // Produces a self-contained Yano Wallet with a bundled open-source JRE and the
 // bundled node jar, so an end user needs no manual Java install. jpackage cannot
 // cross-compile — build each OS on its own machine. Build/jlink on an OpenJDK
-// (Temurin/Liberica, GPLv2+CE) so the bundled runtime is redistributable.
+// (Corretto/Temurin/Liberica, GPLv2+CE) so the bundled runtime is redistributable.
+// Release CI uses Corretto 25 >= 25.0.5.1 (CVE-2026-114938; see release.yml).
 def isWindows = System.getProperty('os.name').toLowerCase().contains('win')
 def isMac = System.getProperty('os.name').toLowerCase().contains('mac')
 
